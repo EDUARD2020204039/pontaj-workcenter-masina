@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <title>Loguri aplicație</title>
+    <style>
+        body { font-family: monospace; background: #f0f0f0; padding: 20px; }
+        .log-box {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 0 8px rgba(0,0,0,0.1);
+        }
+        .log-line { margin: 4px 0; }
+
+        /* CARDURI ANGAJATI */
+        .angajati-pontati-list {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 14px;
+            flex-wrap: wrap;
+        }
+        .angajat-card {
+            background: #fff;
+            border: 2px solid #4CAF50;
+            border-radius: 14px;
+            box-shadow: 0 1px 5px rgba(44, 163, 68, 0.06);
+            padding: 6px 14px;
+            font-size: 14px;
+            color: #222;
+            display: flex;
+            align-items: center;
+            min-width: 130px;
+            margin-bottom: 6px;
+            font-weight: bold;
+            transition: transform 0.13s, box-shadow 0.13s;
+            letter-spacing: 0.2px;
+        }
+        .angajat-card:hover {
+            transform: translateY(-1px) scale(1.03);
+            box-shadow: 0 3px 12px rgba(44, 163, 68, 0.11);
+            border-color: #388e3c;
+        }
+        .angajat-card.inactiv {
+            border-color: #e53935;
+            box-shadow: 0 1px 5px rgba(229, 57, 53, 0.08);
+        }
+        .angajat-card.inactiv:hover {
+            border-color: #b71c1c;
+            box-shadow: 0 3px 12px rgba(229, 57, 53, 0.15);
+        }
+
+
+    </style>
+</head>
+<body>
+    <h1>📜 Loguri în timp real</h1>
+
+    <h2>👥 Angajați activi acum:</h2>
+    <div class="angajati-pontati-list" id="angajati-pontati">
+        <!-- Populat din JS -->
+    </div>
+
+    <h2>❌ Angajați inactivi:</h2>
+    <div class="angajati-pontati-list" id="angajati-inactivi">
+        <!-- Populat din JS -->
+    </div>
+
+    <div class="log-box">
+        {% for line in logs %}
+            <div class="log-line">{{ line }}</div>
+        {% endfor %}
+    </div>
+</body>
+<script>
+    setTimeout(() => {
+        window.location.reload();
+    }, 20000);
+
+    function incarcaAngajatiPontati() {
+        const container = document.getElementById("angajati-pontati");
+        container.innerHTML = "";
+        fetch('/api/angajati_pontati')
+            .then(res => res.json())
+            .then(data => {
+                if (data.length === 0) {
+                    container.innerHTML = "<div style='color: gray; font-style: italic;'>Nimeni nu e pontat momentan.</div>";
+                } else {
+                    data.forEach(item => {
+                        const card = document.createElement("div");
+                        card.className = "angajat-card";
+                        card.innerText = item;
+                        container.appendChild(card);
+                    });
+                }
+            });
+    }
+
+    function incarcaAngajatiInactivi() {
+    const container = document.getElementById("angajati-inactivi");
+    container.innerHTML = "";
+    fetch('/api/angajati_inactivi')
+        .then(res => res.json())
+        .then(data => {
+            if (data.length === 0) {
+                container.innerHTML = "<div style='color: gray; font-style: italic;'>Toți angajații sunt activi.</div>";
+            } else {
+                data.forEach(item => {
+                    const card = document.createElement("div");
+                    card.className = "angajat-card inactiv";
+                    card.innerText = item;
+                    container.appendChild(card);
+                });
+            }
+        });
+}
+
+incarcaAngajatiPontati();
+incarcaAngajatiInactivi();
+setInterval(() => {
+    incarcaAngajatiPontati();
+    incarcaAngajatiInactivi();
+}, 300000);
+
+</script>
+</html>
