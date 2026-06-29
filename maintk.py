@@ -53,6 +53,11 @@ def read_version():
 
 
 APP_VERSION = read_version()
+
+if "--smoke-test" in sys.argv:
+    print(f"{APP_NAME} {APP_VERSION}")
+    sys.exit(0)
+
 APPDATA_DIR = Path(os.getenv("APPDATA", Path.home())) / APP_NAME
 APPDATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = APPDATA_DIR / "config.json"
@@ -479,19 +484,58 @@ def download_and_install_update(update):
         if update.get("sha256") and digest.hexdigest().lower() != update["sha256"].lower():
             raise RuntimeError("Semnătura SHA-256 a actualizării nu corespunde.")
         current = Path(sys.executable).resolve()
-        script = Path(tempfile.gettempdir()) / f"{APP_NAME}-update.cmd"
+        script = Path(tempfile.gettempdir()) / f"{APP_NAME}-update.ps1"
+        updater_log = APPDATA_DIR / "updater.log"
+        current_pid = os.getpid()
         script.write_text(
-            "@echo off\r\n"
-            "timeout /t 3 /nobreak >nul\r\n"
-            f'copy /y "{target}" "{current}" >nul\r\n'
-            f'start "" "{current}"\r\n'
-            f'del /q "{target}"\r\n'
-            'del /q "%~f0"\r\n',
-            encoding="utf-8",
+            "$ErrorActionPreference = 'Continue'\n"
+            f"$Source = {json.dumps(str(target))}\n"
+            f"$Target = {json.dumps(str(current))}\n"
+            f"$LogFile = {json.dumps(str(updater_log))}\n"
+            f"$OldPid = {current_pid}\n"
+            "function Write-UpdateLog([string]$Message) {\n"
+            "    $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'\n"
+            "    Add-Content -LiteralPath $LogFile -Encoding UTF8 -Value \"[$stamp] $Message\"\n"
+            "}\n"
+            "Write-UpdateLog \"Updater pornit. Source=$Source Target=$Target OldPid=$OldPid\"\n"
+            "Start-Sleep -Seconds 2\n"
+            "try {\n"
+            "    $process = Get-Process -Id $OldPid -ErrorAction SilentlyContinue\n"
+            "    if ($process) {\n"
+            "        Write-UpdateLog \"Aștept închiderea aplicației vechi.\"\n"
+            "        if (-not $process.WaitForExit(10000)) {\n"
+            "            Write-UpdateLog \"Aplicația veche încă rulează; o închid forțat.\"\n"
+            "            Stop-Process -Id $OldPid -Force -ErrorAction SilentlyContinue\n"
+            "            Start-Sleep -Seconds 2\n"
+            "        }\n"
+            "    }\n"
+            "} catch { Write-UpdateLog \"Verificare proces vechi eșuată: $($_.Exception.Message)\" }\n"
+            "for ($attempt = 1; $attempt -le 40; $attempt++) {\n"
+            "    try {\n"
+            "        Copy-Item -LiteralPath $Source -Destination $Target -Force -ErrorAction Stop\n"
+            "        Write-UpdateLog \"Copiere reușită la încercarea $attempt.\"\n"
+            "        Start-Process -FilePath $Target\n"
+            "        Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue\n"
+            "        Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\n"
+            "        exit 0\n"
+            "    } catch {\n"
+            "        Write-UpdateLog \"Încercarea $attempt a eșuat: $($_.Exception.Message)\"\n"
+            "        Start-Sleep -Seconds 1\n"
+            "    }\n"
+            "}\n"
+            "Write-UpdateLog \"Actualizarea a eșuat după 40 de încercări; repornesc versiunea existentă.\"\n"
+            "Start-Process -FilePath $Target\n"
+            "exit 1\n",
+            encoding="utf-8-sig",
         )
         heartbeat("updating", f"Actualizare la v{update['version']}")
-        subprocess.Popen(["cmd.exe", "/c", str(script)], creationflags=subprocess.CREATE_NO_WINDOW)
-        root.after(0, root.destroy)
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+        subprocess.Popen(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            creationflags=creationflags,
+            close_fds=True,
+        )
+        os._exit(0)
     except Exception as exc:
         update_started = False
         debug(f"Actualizare eșuată: {exc}")

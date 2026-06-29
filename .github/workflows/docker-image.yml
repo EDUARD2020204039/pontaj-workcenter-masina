@@ -22,7 +22,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
           cache: pip
           cache-dependency-path: requirements-client.txt
 
@@ -52,6 +52,15 @@ jobs:
             --add-data "drivers;drivers" `
             --hidden-import smartcard.scard._scard `
             maintk.py
+
+      - name: Smoke test Windows client
+        shell: pwsh
+        run: |
+          Start-Process -FilePath "dist/WorkCenterPontaj.exe" -ArgumentList "--smoke-test" -Wait -PassThru | ForEach-Object {
+            if ($_.ExitCode -ne 0) {
+              throw "WorkCenterPontaj.exe smoke test failed with exit code $($_.ExitCode)"
+            }
+          }
 
       - name: Upload Windows client
         uses: actions/upload-artifact@v4
