@@ -14,6 +14,10 @@ from datetime import date, datetime
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, simpledialog, ttk
+try:
+    import winreg
+except ImportError:
+    winreg = None
 
 import pyodbc
 import pystray
@@ -571,6 +575,47 @@ def tray_image():
     return image
 
 
+def ensure_startup_registration():
+    if platform.system() != "Windows" or winreg is None or not getattr(sys, "frozen", False):
+        return
+    try:
+        command = f'"{Path(sys.executable).resolve()}" --minimized'
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0,
+            winreg.KEY_SET_VALUE,
+        ) as key:
+            winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, command)
+        debug("Pornire automată configurată pentru Windows startup.")
+    except Exception as exc:
+        debug(f"Nu am putut configura pornirea automată: {exc}")
+
+
+def set_tray_visible():
+    if not tray_icon:
+        return
+    try:
+        tray_icon.visible = True
+    except Exception as exc:
+        debug(f"Nu am putut afișa iconița în system tray: {exc}")
+
+
+def ensure_tray_icon():
+    global tray_icon
+    if tray_icon is not None:
+        set_tray_visible()
+        return
+    menu = pystray.Menu(
+        pystray.MenuItem("Deschide", show_window),
+        pystray.MenuItem("Ascunde", hide_window),
+        pystray.MenuItem("Ieșire", quit_app),
+    )
+    tray_icon = pystray.Icon(APP_NAME, tray_image(), "WorkCenter Pontaj", menu)
+    threading.Thread(target=tray_icon.run, daemon=True).start()
+    root.after(500, set_tray_visible)
+
+
 def show_window(icon=None, item=None):
     root.after(0, root.deiconify)
     root.after(0, root.lift)
@@ -584,12 +629,8 @@ def quit_app(icon=None, item=None):
 
 
 def hide_window():
-    global tray_icon
     root.withdraw()
-    if tray_icon is None:
-        menu = pystray.Menu(pystray.MenuItem("Deschide", show_window), pystray.MenuItem("Ieșire", quit_app))
-        tray_icon = pystray.Icon(APP_NAME, tray_image(), "WorkCenter Pontaj", menu)
-        threading.Thread(target=tray_icon.run, daemon=True).start()
+    ensure_tray_icon()
 
 
 root = tk.Tk()
@@ -651,9 +692,13 @@ ttk.Button(actions, text="Diagnostic", command=show_debug).pack(side="right")
 root.update_idletasks()
 if not available_sql_driver():
     install_bundled_drivers()
+ensure_startup_registration()
+ensure_tray_icon()
 threading.Thread(target=load_workcenters, daemon=True).start()
 threading.Thread(target=run_preflight, daemon=True).start()
 threading.Thread(target=heartbeat_loop, daemon=True).start()
 threading.Thread(target=nfc_loop, daemon=True).start()
+if "--minimized" in sys.argv:
+    root.withdraw()
 pin_entry.focus_set()
 root.mainloop()

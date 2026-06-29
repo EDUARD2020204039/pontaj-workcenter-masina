@@ -32,6 +32,8 @@ La prima pornire:
 
 Clientul acceptă cartelă NFC, telefon HCE și PIN. Pentru PIN caută automat în tabela `Angajati` prima coloană existentă dintre `PIN`, `PIN_PONTAJ`, `COD_PIN` și `PIN_ANGAJAT`.
 
+La fiecare pornire, clientul afișează iconița în system tray și se înregistrează automat în Windows Startup pentru user-ul curent. La restart de PC pornește minimizat în tray cu parametrul `--minimized`.
+
 ## Versionare și update
 
 Versiunea curentă este în fișierul `VERSION`. Orice release trebuie să îi mărească valoarea înainte de push. Workflow-ul:
