@@ -5,8 +5,11 @@ __pycache__
 *.py[cod]
 *.spec
 *.ico
+drivers/*.msi
+drivers/*.exe
 build
 dist
 maintk.py
 nfc_reader.py
 config.json
+requirements-client.txt

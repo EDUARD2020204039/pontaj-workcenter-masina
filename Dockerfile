@@ -2,7 +2,8 @@ FROM python:3.12-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    TZ=Europe/Bucharest
 
 WORKDIR /app
 
@@ -12,7 +13,7 @@ RUN apt-get update \
     && dpkg -i /tmp/packages-microsoft-prod.deb \
     && rm /tmp/packages-microsoft-prod.deb \
     && apt-get update \
-    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql17 unixodbc \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 unixodbc tzdata \
     && apt-get purge -y --auto-remove curl gnupg \
     && rm -rf /var/lib/apt/lists/*
 
@@ -20,8 +21,14 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY Main.py .
+COPY VERSION .
 COPY templates ./templates
 COPY static ./static
+COPY downloads ./downloads
+
+RUN mkdir -p /data
+
+VOLUME ["/data"]
 
 EXPOSE 3490
 

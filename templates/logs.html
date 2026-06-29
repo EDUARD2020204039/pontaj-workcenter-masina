@@ -1,128 +1,116 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ro">
 <head>
-    <meta charset="UTF-8">
-    <title>Loguri aplicație</title>
-    <style>
-        body { font-family: monospace; background: #f0f0f0; padding: 20px; }
-        .log-box {
-            background: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            height: 90vh;
-            overflow-y: auto;
-            box-shadow: 0 0 8px rgba(0,0,0,0.1);
-        }
-        .log-line { margin: 4px 0; }
-
-        /* CARDURI ANGAJATI */
-        .angajati-pontati-list {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 14px;
-            flex-wrap: wrap;
-        }
-        .angajat-card {
-            background: #fff;
-            border: 2px solid #4CAF50;
-            border-radius: 14px;
-            box-shadow: 0 1px 5px rgba(44, 163, 68, 0.06);
-            padding: 6px 14px;
-            font-size: 14px;
-            color: #222;
-            display: flex;
-            align-items: center;
-            min-width: 130px;
-            margin-bottom: 6px;
-            font-weight: bold;
-            transition: transform 0.13s, box-shadow 0.13s;
-            letter-spacing: 0.2px;
-        }
-        .angajat-card:hover {
-            transform: translateY(-1px) scale(1.03);
-            box-shadow: 0 3px 12px rgba(44, 163, 68, 0.11);
-            border-color: #388e3c;
-        }
-        .angajat-card.inactiv {
-            border-color: #e53935;
-            box-shadow: 0 1px 5px rgba(229, 57, 53, 0.08);
-        }
-        .angajat-card.inactiv:hover {
-            border-color: #b71c1c;
-            box-shadow: 0 3px 12px rgba(229, 57, 53, 0.15);
-        }
-
-
-    </style>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WorkCenter Pontaj</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-    <h1>📜 Loguri în timp real</h1>
-
-    <h2>👥 Angajați activi acum:</h2>
-    <div class="angajati-pontati-list" id="angajati-pontati">
-        <!-- Populat din JS -->
+<header class="topbar">
+    <div>
+        <p class="eyebrow">HABA · Producție</p>
+        <h1>WorkCenter Pontaj</h1>
+        <p class="subtitle">Stații, prezență și distribuirea aplicației într-un singur loc.</p>
     </div>
-
-    <h2>❌ Angajați inactivi:</h2>
-    <div class="angajati-pontati-list" id="angajati-inactivi">
-        <!-- Populat din JS -->
+    <div class="release-card">
+        <span>Versiunea disponibilă</span>
+        <strong>v{{ version }}</strong>
+        {% if download_available %}
+        <a class="button" href="/download/client">Descarcă WorkCenterPontaj.exe</a>
+        {% else %}
+        <small>Executabilul va apărea după finalizarea workflow-ului GitHub.</small>
+        {% endif %}
     </div>
+</header>
 
-    <div class="log-box">
-        {% for line in logs %}
-            <div class="log-line">{{ line }}</div>
-        {% endfor %}
-    </div>
-</body>
+<main>
+    <section>
+        <div class="section-title">
+            <div><span class="kicker">Rețea</span><h2>Stații WorkCenter</h2></div>
+            <span id="station-summary" class="muted">Se încarcă…</span>
+        </div>
+        <div id="stations" class="grid"></div>
+    </section>
+
+    <section class="split">
+        <div class="panel">
+            <div class="section-title"><h2>Angajați activi</h2><span id="active-count" class="count">0</span></div>
+            <div id="active-employees" class="people"></div>
+        </div>
+        <div class="panel">
+            <div class="section-title"><h2>Angajați inactivi</h2><span id="inactive-count" class="count neutral">0</span></div>
+            <div id="inactive-employees" class="people"></div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="section-title"><h2>Jurnal recent</h2><span class="muted">Ultimele 200 de evenimente</span></div>
+        <div class="logs" id="logs">
+            {% for line in logs %}<div>{{ line }}</div>{% else %}<div class="muted">Nu există încă evenimente.</div>{% endfor %}
+        </div>
+    </section>
+</main>
+
 <script>
-    setTimeout(() => {
-        window.location.reload();
-    }, 20000);
+const latestVersion = {{ version|tojson }};
 
-    function incarcaAngajatiPontati() {
-        const container = document.getElementById("angajati-pontati");
-        container.innerHTML = "";
-        fetch('/api/angajati_pontati')
-            .then(res => res.json())
-            .then(data => {
-                if (data.length === 0) {
-                    container.innerHTML = "<div style='color: gray; font-style: italic;'>Nimeni nu e pontat momentan.</div>";
-                } else {
-                    data.forEach(item => {
-                        const card = document.createElement("div");
-                        card.className = "angajat-card";
-                        card.innerText = item;
-                        container.appendChild(card);
-                    });
-                }
-            });
-    }
-
-    function incarcaAngajatiInactivi() {
-    const container = document.getElementById("angajati-inactivi");
-    container.innerHTML = "";
-    fetch('/api/angajati_inactivi')
-        .then(res => res.json())
-        .then(data => {
-            if (data.length === 0) {
-                container.innerHTML = "<div style='color: gray; font-style: italic;'>Toți angajații sunt activi.</div>";
-            } else {
-                data.forEach(item => {
-                    const card = document.createElement("div");
-                    card.className = "angajat-card inactiv";
-                    card.innerText = item;
-                    container.appendChild(card);
-                });
-            }
-        });
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
 }
 
-incarcaAngajatiPontati();
-incarcaAngajatiInactivi();
-setInterval(() => {
-    incarcaAngajatiPontati();
-    incarcaAngajatiInactivi();
-}, 300000);
+async function getJson(url) {
+    const response = await fetch(url, {cache: 'no-store'});
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+}
 
+async function loadStations() {
+    const container = document.getElementById('stations');
+    try {
+        const stations = await getJson('/api/clients');
+        const online = stations.filter(item => item.online).length;
+        document.getElementById('station-summary').textContent = `${online} online din ${stations.length}`;
+        if (!stations.length) {
+            container.innerHTML = '<div class="empty">Nicio stație nu a trimis încă heartbeat.</div>';
+            return;
+        }
+        container.innerHTML = stations.map(item => `
+            <article class="station ${item.online ? 'online' : 'offline'}">
+                <div class="station-head"><span class="dot"></span><strong>${escapeHtml(item.hostname)}</strong><span class="pill">${item.online ? 'Online' : 'Offline'}</span></div>
+                <h3>${escapeHtml(item.workcenter_name || `WorkCenter ${item.workcenter_id || 'nesetat'}`)}</h3>
+                <dl>
+                    <div><dt>Versiune</dt><dd>v${escapeHtml(item.version || '?')}${item.update_available ? ' · actualizare în curs' : ''}</dd></div>
+                    <div><dt>IP</dt><dd>${escapeHtml(item.ip_address || '—')}</dd></div>
+                    <div><dt>Ultima comunicare</dt><dd>${escapeHtml(item.last_seen || '—')}</dd></div>
+                </dl>
+                ${item.detail ? `<p class="detail">${escapeHtml(item.detail)}</p>` : ''}
+            </article>`).join('');
+    } catch (error) {
+        container.innerHTML = `<div class="empty error">Nu pot încărca stațiile: ${escapeHtml(error.message)}</div>`;
+    }
+}
+
+async function loadPeople(url, target, counter) {
+    const container = document.getElementById(target);
+    try {
+        const people = await getJson(url);
+        document.getElementById(counter).textContent = people.length;
+        container.innerHTML = people.length
+            ? people.map(person => `<span class="person">${escapeHtml(person)}</span>`).join('')
+            : '<span class="muted">Nicio înregistrare.</span>';
+    } catch (error) {
+        container.innerHTML = `<span class="error">Baza de date nu este disponibilă.</span>`;
+    }
+}
+
+function refresh() {
+    loadStations();
+    loadPeople('/api/angajati_pontati', 'active-employees', 'active-count');
+    loadPeople('/api/angajati_inactivi', 'inactive-employees', 'inactive-count');
+}
+refresh();
+setInterval(refresh, 30000);
 </script>
+</body>
 </html>

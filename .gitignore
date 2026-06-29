@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.venv/
+drivers/*.msi
+drivers/*.exe
+downloads/*.exe

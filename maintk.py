@@ -1,621 +1,656 @@
+import ctypes
+import hashlib
 import json
 import os
+import platform
+import socket
+import subprocess
 import sys
+import tempfile
 import threading
 import time
-import tkinter as tk
+import uuid
 from datetime import date, datetime
-from queue import Queue
-from tkinter import scrolledtext, simpledialog, ttk
+from pathlib import Path
+import tkinter as tk
+from tkinter import messagebox, scrolledtext, simpledialog, ttk
 
 import pyodbc
 import pystray
+import requests
 from PIL import Image, ImageDraw
-from win10toast import ToastNotifier
 
 from nfc_reader import get_scan_data
 
-last_scan_key = None
-last_scan_time = 0
-selected_workcenter_id = None
-tray_icon = None
-tray_image = None
-toaster = ToastNotifier()
-recent_scan_keys = {}
-PHONE_SCAN_WAIT_SECONDS = 2.0
-PHONE_SCAN_POLL_SECONDS = 0.25
-REPEAT_SCAN_DELAY_SECONDS = 5.0
-DEBUG_PASSWORD = "XXX"
-DEBUG_LOG_LIMIT = 300
+
+APP_NAME = "WorkCenterPontaj"
+DEFAULT_SERVER_URL = "http://192.168.2.1:3490"
+SETTINGS_PASSWORD = "XXX"
+HEARTBEAT_SECONDS = 60
+REPEAT_SCAN_SECONDS = 5
+PHONE_SCAN_WAIT_SECONDS = 2
+PIN_COLUMN_CANDIDATES = ("PIN", "PIN_PONTAJ", "COD_PIN", "PIN_ANGAJAT")
+
+DB_SERVER = "192.168.2.6"
+DB_DATABASE = "Metal"
+DB_USERNAME = "bogdan"
+DB_PASSWORD = "HELPAN123$"
+
+
+def resource_path(relative):
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base / relative
+
+
+def read_version():
+    path = resource_path("VERSION")
+    return path.read_text(encoding="utf-8").strip() if path.exists() else "0.0.0-dev"
+
+
+APP_VERSION = read_version()
+APPDATA_DIR = Path(os.getenv("APPDATA", Path.home())) / APP_NAME
+APPDATA_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_FILE = APPDATA_DIR / "config.json"
+LOG_FILE = APPDATA_DIR / "client.log"
+
+
+def default_config():
+    return {
+        "client_id": str(uuid.uuid4()),
+        "server_url": DEFAULT_SERVER_URL,
+        "workcenter_id": "",
+        "workcenter_name": "",
+    }
+
+
+def load_config():
+    config = default_config()
+    try:
+        if CONFIG_FILE.exists():
+            config.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
+    except Exception:
+        pass
+    return config
+
+
+config = load_config()
+
+
+def save_config():
+    CONFIG_FILE.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 debug_logs = []
-debug_window = None
-debug_text_widget = None
 debug_lock = threading.Lock()
-
-db_config = {
-    "server": "192.168.2.6",
-    "database": "Metal",
-    "username": "bogdan",
-    "password": "HELPAN123$",
-    "driver": "{ODBC Driver 17 for SQL Server}",
-}
+debug_window = None
+debug_widget = None
+tray_icon = None
+recent_scans = {}
+update_started = False
+last_preflight = {"driver": False, "database": False, "nfc": False, "server": False}
 
 
-def get_db_connection():
+def debug(message):
+    line = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {message}"
+    with debug_lock:
+        debug_logs.append(line)
+        del debug_logs[:-400]
+        try:
+            with LOG_FILE.open("a", encoding="utf-8") as stream:
+                stream.write(line + "\n")
+        except Exception:
+            pass
+    if debug_widget and debug_widget.winfo_exists():
+        root.after(0, refresh_debug)
+
+
+def available_sql_driver():
+    drivers = pyodbc.drivers()
+    for preferred in ("ODBC Driver 18 for SQL Server", "ODBC Driver 17 for SQL Server"):
+        if preferred in drivers:
+            return preferred
+    return ""
+
+
+def install_bundled_drivers():
+    installer = resource_path("drivers/install_drivers.cmd")
+    msi = resource_path("drivers/msodbcsql.msi")
+    runtime = resource_path("drivers/vc_redist.x64.exe")
+    if not all(path.exists() for path in (installer, msi, runtime)):
+        messagebox.showerror(
+            "Driver SQL lipsă",
+            "Driverul Microsoft ODBC lipsește, iar această versiune nu conține installerul inclus. "
+            "Descarcă din nou aplicația de pe pagina serverului.",
+        )
+        return False
+    answer = messagebox.askyesno(
+        "Instalare driver SQL",
+        "Microsoft ODBC Driver nu este instalat. Aplicația îl poate instala acum.\n\n"
+        "Windows va solicita drepturi de administrator. Continui?",
+    )
+    if not answer:
+        return False
+    result = ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", "cmd.exe", f'/c "{installer}"', str(installer.parent), 0
+    )
+    if result <= 32:
+        messagebox.showerror("Instalare eșuată", f"Installerul nu a pornit (cod {result}).")
+        return False
+    status_var.set("Se instalează driverul SQL…")
+    root.update_idletasks()
+    for _ in range(90):
+        time.sleep(1)
+        if available_sql_driver():
+            return True
+    messagebox.showwarning("Instalare", "Instalarea nu s-a confirmat în timp util. Repornește aplicația.")
+    return False
+
+
+def get_db_connection(timeout=5):
+    driver = available_sql_driver()
+    if not driver:
+        raise RuntimeError("Microsoft ODBC Driver 17/18 nu este instalat.")
     return pyodbc.connect(
-        f"DRIVER={db_config['driver']};"
-        f"SERVER={db_config['server']};"
-        f"DATABASE={db_config['database']};"
-        f"UID={db_config['username']};"
-        f"PWD={db_config['password']}"
+        f"DRIVER={{{driver}}};SERVER={DB_SERVER};DATABASE={DB_DATABASE};"
+        f"UID={DB_USERNAME};PWD={DB_PASSWORD};TrustServerCertificate=yes;",
+        timeout=timeout,
     )
 
 
-def normalize_scan_value(value):
-    if value is None:
-        return None
-    return str(value).strip().upper().replace(" ", "").replace("-", "").replace(":", "")
+def detect_pin_column(cursor):
+    placeholders = ",".join("?" for _ in PIN_COLUMN_CANDIDATES)
+    rows = cursor.execute(
+        f"""
+        SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = 'Angajati' AND UPPER(COLUMN_NAME) IN ({placeholders})
+        """,
+        *PIN_COLUMN_CANDIDATES,
+    ).fetchall()
+    found = {str(row[0]).upper(): str(row[0]) for row in rows}
+    return next((found[name] for name in PIN_COLUMN_CANDIDATES if name in found), "")
 
 
-def normalize_card_code(value):
-    if not value:
-        return ""
-    return " ".join(str(value).replace("-", " ").replace(":", " ").strip().upper().split())
+def normalize_hce(value):
+    return str(value or "").strip().upper().replace(" ", "").replace("-", "").replace(":", "")
 
 
-def get_base_dir():
-    if getattr(sys, "frozen", False):
-        return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
-    return os.path.dirname(os.path.abspath(__file__))
+def normalize_uid(value):
+    return " ".join(str(value or "").replace("-", " ").replace(":", " ").strip().upper().split())
 
 
-def get_config_file():
-    appdata_dir = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "WorkCenterScanTEST")
-    os.makedirs(appdata_dir, exist_ok=True)
-    return os.path.join(appdata_dir, "config.json")
-
-
-def get_icon_path():
-    return os.path.join(get_base_dir(), "card.ico")
-
-
-def load_tray_image():
-    icon_path = get_icon_path()
-    if os.path.exists(icon_path):
-        try:
-            return Image.open(icon_path)
-        except Exception as exc:
-            append_debug_log(f"Eroare incarcare icon tray: {exc}")
-
-    image = Image.new("RGBA", (64, 64), "#1f6aa5")
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((4, 4, 60, 60), radius=12, fill="#1f6aa5", outline="white", width=2)
-    draw.text((18, 20), "WC", fill="white")
-    return image
-
-
-CONFIG_FILE = get_config_file()
-
-
-def solicita_parola():
-    if workcenter_dropdown["state"] == "readonly":
-        return
-
-    parola = simpledialog.askstring("Autentificare", "Introduceti parola:", show="*")
-    if parola == DEBUG_PASSWORD:
-        workcenter_dropdown.config(state="readonly")
-        mesaj_label.config(text="Selecteaza WorkCenter", fg="green")
-    else:
-        mesaj_label.config(text="Parola gresita", fg="red")
-
-
-def append_debug_log(message):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    line = f"[{timestamp}] {message}"
-    with debug_lock:
-        debug_logs.append(line)
-        if len(debug_logs) > DEBUG_LOG_LIMIT:
-            del debug_logs[:-DEBUG_LOG_LIMIT]
-
-    if debug_text_widget and debug_text_widget.winfo_exists():
-        root.after(0, refresh_debug_window)
-
-
-def refresh_debug_window():
-    if not debug_text_widget or not debug_text_widget.winfo_exists():
-        return
-
-    debug_text_widget.config(state="normal")
-    debug_text_widget.delete("1.0", tk.END)
-    with debug_lock:
-        debug_text_widget.insert(tk.END, "\n".join(debug_logs))
-    debug_text_widget.see(tk.END)
-    debug_text_widget.config(state="disabled")
-
-
-def close_debug_window():
-    global debug_window, debug_text_widget
-    if debug_window and debug_window.winfo_exists():
-        debug_window.destroy()
-    debug_window = None
-    debug_text_widget = None
-
-
-def show_debug_window():
-    global debug_window, debug_text_widget
-
-    parola = simpledialog.askstring("Debug", "Introduceti parola debug:", show="*")
-    if parola != DEBUG_PASSWORD:
-        mesaj_label.config(text="Parola debug gresita", fg="red")
-        return
-
-    if debug_window and debug_window.winfo_exists():
-        debug_window.deiconify()
-        debug_window.lift()
-        refresh_debug_window()
-        return
-
-    debug_window = tk.Toplevel(root)
-    debug_window.title("Debug NFC")
-    debug_window.geometry("760x420")
-    debug_window.protocol("WM_DELETE_WINDOW", close_debug_window)
-
-    debug_text_widget = scrolledtext.ScrolledText(debug_window, wrap=tk.WORD, font=("Consolas", 10))
-    debug_text_widget.pack(fill="both", expand=True, padx=10, pady=10)
-    debug_text_widget.config(state="disabled")
-    refresh_debug_window()
-
-
-def save_workcenter_config(workcenter_id):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump({"selected_workcenter_id": workcenter_id}, f)
-
-
-def load_workcenter_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            try:
-                data = json.load(f)
-                return data.get("selected_workcenter_id")
-            except Exception:
-                return None
-    return None
-
-
-def find_employee_by_column(column_name, scan_value, result_queue):
+def resolve_employee(identifier_type, identifier):
+    conn = get_db_connection()
     try:
-        normalized_value = (
-            normalize_card_code(scan_value)
-            if column_name == "COD_CARTELA"
-            else normalize_scan_value(scan_value)
-        )
-        if not normalized_value:
-            append_debug_log(f"DB skip {column_name}: valoare vida")
-            return
-
-        conn = get_db_connection()
         cursor = conn.cursor()
-        if column_name == "COD_CARTELA":
+        if identifier_type == "pin":
+            column = detect_pin_column(cursor)
+            if not column:
+                raise RuntimeError(
+                    "În Angajati nu există coloana PIN. Am verificat: " + ", ".join(PIN_COLUMN_CANDIDATES)
+                )
             cursor.execute(
-                """
-                SELECT TOP 1 ID, Nume, Prenume
-                FROM Angajati
-                WHERE UPPER(ISNULL(COD_CARTELA, '')) = ?
-            """,
-                (normalized_value,),
+                f"SELECT TOP 1 ID, Nume, Prenume FROM Angajati "
+                f"WHERE LTRIM(RTRIM(CONVERT(NVARCHAR(50), [{column}]))) = ?",
+                str(identifier).strip(),
+            )
+        elif identifier_type == "uid":
+            cursor.execute(
+                "SELECT TOP 1 ID, Nume, Prenume FROM Angajati WHERE UPPER(ISNULL(COD_CARTELA, '')) = ?",
+                normalize_uid(identifier),
             )
         else:
             cursor.execute(
-                f"""
-                SELECT TOP 1 ID, Nume, Prenume
-                FROM Angajati
-                WHERE REPLACE(REPLACE(REPLACE(UPPER(ISNULL({column_name}, '')), ' ', ''), '-', ''), ':', '') = ?
-            """,
-                (normalized_value,),
+                """
+                SELECT TOP 1 ID, Nume, Prenume FROM Angajati
+                WHERE REPLACE(REPLACE(REPLACE(UPPER(ISNULL(TELEFON_UUID, '')), ' ', ''), '-', ''), ':', '') = ?
+                """,
+                normalize_hce(identifier),
             )
-        row = cursor.fetchone()
+        return cursor.fetchone()
+    finally:
+        conn.close()
+
+
+def process_pontaj(employee_id, workcenter_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    today = date.today()
+    now = datetime.now()
+    messages = []
+    try:
+        cursor.execute("SET XACT_ABORT ON; SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;")
+        rows = cursor.execute(
+            """
+            SELECT WorkCenterID, OraCheckIn FROM PontajWorkCenter WITH (UPDLOCK, HOLDLOCK)
+            WHERE ID = ? AND Data = ? AND OraCheckOut IS NULL
+            """,
+            employee_id, today,
+        ).fetchall()
+        current_open = any(str(row[0]) == str(workcenter_id) for row in rows)
+        if rows:
+            to_close = [row for row in rows if str(row[0]) == str(workcenter_id)] if current_open else rows
+            checkout = now.strftime("%H:%M:%S")
+            for wc_id, checkin in to_close:
+                duration = str(now - datetime.combine(today, checkin)).split(".")[0]
+                cursor.execute(
+                    """
+                    UPDATE PontajWorkCenter SET OraCheckOut = ?, DurataTotala = ?
+                    WHERE ID = ? AND Data = ? AND WorkCenterID = ? AND OraCheckIn = ? AND OraCheckOut IS NULL
+                    """,
+                    checkout, duration, employee_id, today, wc_id, checkin,
+                )
+                messages.append(f"Check-out la WC {wc_id}, ora {checkout} (durata {duration})")
+            cursor.execute(
+                "UPDATE ProductieAngajati SET OraCheckOut = ? WHERE ID = ? AND Data = ? AND OraCheckOut IS NULL",
+                checkout, employee_id, today,
+            )
+        if not rows or not current_open:
+            checkin = now.strftime("%H:%M:%S")
+            cursor.execute(
+                "INSERT INTO PontajWorkCenter (ID, WorkCenterID, Data, OraCheckIn) VALUES (?, ?, ?, ?)",
+                employee_id, workcenter_id, today, checkin,
+            )
+            cursor.execute(
+                "INSERT INTO ProductieAngajati (ID, Data, OraCheckIn) VALUES (?, ?, ?)",
+                employee_id, today, checkin,
+            )
+            messages.append(f"Check-in la WC {workcenter_id}, ora {checkin}")
+        conn.commit()
+        return "\n".join(messages)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
         cursor.close()
         conn.close()
 
-        if row:
-            append_debug_log(f"DB match {column_name}: {normalized_value} -> ID {row[0]}")
-            result_queue.put((column_name, row))
-        else:
-            append_debug_log(f"DB fara match {column_name}: {normalized_value}")
-    except Exception as exc:
-        append_debug_log(f"Eroare DB lookup {column_name}: {exc}")
+
+def perform_pontaj(identifier_type, identifier):
+    workcenter_id = config.get("workcenter_id")
+    if not workcenter_id:
+        show_result(False, "Selectează mai întâi WorkCenter-ul.", "")
         return
+    key = f"{identifier_type}:{normalize_hce(identifier)}"
+    now = time.time()
+    if identifier_type != "pin" and now - recent_scans.get(key, 0) < REPEAT_SCAN_SECONDS:
+        return
+    recent_scans[key] = now
+    set_busy(True, "Se procesează pontajul…")
+
+    def worker():
+        try:
+            employee = resolve_employee(identifier_type, identifier)
+            if not employee:
+                raise LookupError("PIN, telefon sau cartelă nerecunoscută.")
+            employee_id, first_name, last_name = employee
+            name = f"{first_name} {last_name}"
+            message = process_pontaj(employee_id, workcenter_id)
+            debug(f"Pontaj {identifier_type} | {name} | WC {workcenter_id} | {message}")
+            root.after(0, lambda: show_result(True, message, name))
+        except Exception as exc:
+            debug(f"Eroare pontaj {identifier_type}: {exc}")
+            root.after(0, lambda: show_result(False, str(exc), ""))
+    threading.Thread(target=worker, daemon=True).start()
 
 
-def resolve_employee(hce_id, uid):
-    result_queue = Queue()
-    workers = []
-
-    if hce_id:
-        workers.append(threading.Thread(
-            target=find_employee_by_column,
-            args=("TELEFON_UUID", hce_id, result_queue),
-            daemon=True,
-        ))
-
-    if uid:
-        workers.append(threading.Thread(
-            target=find_employee_by_column,
-            args=("COD_CARTELA", uid, result_queue),
-            daemon=True,
-        ))
-
-    for worker in workers:
-        worker.start()
-
-    for worker in workers:
-        worker.join(timeout=3)
-
-    results = []
-    while not result_queue.empty():
-        results.append(result_queue.get())
-
-    for source, row in results:
-        if source == "TELEFON_UUID":
-            return source, row
-
-    if results:
-        return results[0]
-
-    return None, None
+def set_busy(busy, text=""):
+    pin_button.config(state="disabled" if busy else "normal")
+    if text:
+        status_var.set(text)
 
 
-def process_pontaj_for_employee(angajat_id, workcenter_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    azi = date.today()
-    acum = datetime.now()
-    mesaj_final = ""
-
-    cursor.execute(
-        """
-        SELECT WorkCenterID, OraCheckIn
-        FROM PontajWorkCenter
-        WHERE ID = ? AND Data = ? AND OraCheckOut IS NULL
-    """,
-        (angajat_id, azi),
-    )
-    rows = cursor.fetchall()
-
-    if rows:
-        already_checked_in_current = any(str(wc_id) == str(workcenter_id) for wc_id, _ in rows)
-
-        if already_checked_in_current:
-            for wc_id, ora_checkin in rows:
-                if str(wc_id) == str(workcenter_id):
-                    datetime_checkin = datetime.combine(azi, ora_checkin)
-                    durata = acum - datetime_checkin
-                    durata_str = str(durata).split(".")[0]
-                    ora_checkout_str = acum.strftime("%H:%M:%S")
-                    cursor.execute(
-                        """
-                        UPDATE PontajWorkCenter
-                        SET OraCheckOut = ?, DurataTotala = ?
-                        WHERE ID = ? AND Data = ? AND WorkCenterID = ? AND OraCheckIn = ?
-                    """,
-                        (ora_checkout_str, durata_str, angajat_id, azi, wc_id, ora_checkin),
-                    )
-                    cursor.execute(
-                        """
-                        UPDATE ProductieAngajati
-                        SET OraCheckOut = ?
-                        WHERE ID = ? AND Data = ? AND OraCheckOut IS NULL
-                    """,
-                        (ora_checkout_str, angajat_id, azi),
-                    )
-                    mesaj_final += f"Check-out la WC {wc_id} la {ora_checkout_str} (durata {durata_str})\n"
-        else:
-            for wc_id, ora_checkin in rows:
-                datetime_checkin = datetime.combine(azi, ora_checkin)
-                durata = acum - datetime_checkin
-                durata_str = str(durata).split(".")[0]
-                ora_checkout_str = acum.strftime("%H:%M:%S")
-                cursor.execute(
-                    """
-                    UPDATE PontajWorkCenter
-                    SET OraCheckOut = ?, DurataTotala = ?
-                    WHERE ID = ? AND Data = ? AND WorkCenterID = ? AND OraCheckIn = ?
-                """,
-                    (ora_checkout_str, durata_str, angajat_id, azi, wc_id, ora_checkin),
-                )
-                cursor.execute(
-                    """
-                    UPDATE ProductieAngajati
-                    SET OraCheckOut = ?
-                    WHERE ID = ? AND Data = ? AND OraCheckOut IS NULL
-                """,
-                    (ora_checkout_str, angajat_id, azi),
-                )
-                mesaj_final += f"Check-out la WC {wc_id} la {ora_checkout_str} (durata {durata_str})\n"
-
-            ora_checkin_str = acum.strftime("%H:%M:%S")
-            cursor.execute(
-                """
-                INSERT INTO PontajWorkCenter (ID, WorkCenterID, Data, OraCheckIn)
-                VALUES (?, ?, ?, ?)
-            """,
-                (angajat_id, workcenter_id, azi, ora_checkin_str),
-            )
-            cursor.execute(
-                """
-                INSERT INTO ProductieAngajati (ID, Data, OraCheckIn)
-                VALUES (?, ?, ?)
-            """,
-                (angajat_id, azi, ora_checkin_str),
-            )
-            mesaj_final += f"Check-in la WC {workcenter_id} la {ora_checkin_str}\n"
-    else:
-        ora_checkin_str = acum.strftime("%H:%M:%S")
-        cursor.execute(
-            """
-            INSERT INTO PontajWorkCenter (ID, WorkCenterID, Data, OraCheckIn)
-            VALUES (?, ?, ?, ?)
-        """,
-            (angajat_id, workcenter_id, azi, ora_checkin_str),
-        )
-        cursor.execute(
-            """
-            INSERT INTO ProductieAngajati (ID, Data, OraCheckIn)
-            VALUES (?, ?, ?)
-        """,
-            (angajat_id, azi, ora_checkin_str),
-        )
-        mesaj_final += f"Check-in la WC {workcenter_id} la {ora_checkin_str}\n"
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-    return mesaj_final.strip()
-
-
-def direct_scan(hce_id, uid, workcenter_id):
-    normalized_hce_id = normalize_scan_value(hce_id)
-    normalized_uid = normalize_card_code(uid)
-    dedup_key = normalized_hce_id or normalized_uid
-    append_debug_log(
-        f"Scan procesat: HCE raw='{hce_id}' | HCE norm='{normalized_hce_id}' | "
-        f"UID raw='{uid}' | UID norm='{normalized_uid}' | WC='{workcenter_id}'"
-    )
-
-    if not dedup_key or not workcenter_id:
-        append_debug_log("Scan invalid: lipseste HCE/UID sau WorkCenterID")
-        return False, "HCE/UID sau WorkCenterID lipsa", ""
-
-    now_timestamp = time.time()
-    last_time = recent_scan_keys.get(dedup_key, 0)
-    if now_timestamp - last_time < REPEAT_SCAN_DELAY_SECONDS:
-        append_debug_log(f"Scan blocat de deduplicare pentru cheia {dedup_key}")
-        return False, "Asteapta 5 secunde intre scanari cu acelasi dispozitiv.", ""
-
-    recent_scan_keys[dedup_key] = now_timestamp
-
-    try:
-        source, row = resolve_employee(normalized_hce_id, normalized_uid)
-        if not row:
-            append_debug_log("Rezultat final: fara angajat gasit")
-            return False, "Telefon sau cartela nerecunoscuta", ""
-
-        angajat_id, nume, prenume = row
-        nume_complet = f"{nume} {prenume}"
-        append_debug_log(f"Rezultat final: match pe {source} -> {angajat_id} {nume_complet}")
-        mesaj_final = process_pontaj_for_employee(angajat_id, workcenter_id)
-        return True, mesaj_final, nume_complet
-    except Exception as e:
-        append_debug_log(f"Eroare in direct_scan: {e}")
-        return False, f"Eroare DB: {e}", ""
-
-
-root = tk.Tk()
-root.title("Scanare Pontaj WorkCenter")
-root.geometry("600x300")
-root.resizable(False, False)
-
-tk.Label(root, text="Selecteaza WorkCenter:", font=("Arial", 12)).pack(pady=10)
-workcenter_var = tk.StringVar()
-workcenter_dropdown = ttk.Combobox(root, textvariable=workcenter_var, state="disabled")
-workcenter_dropdown.pack()
-workcenter_dropdown.bind("<Button-1>", lambda event: solicita_parola())
-
-workcenter_dropdown["values"] = [
-    "1 - Laser",
-    "2 - Abkant",
-    "3 - Strung",
-    "4 - Fierastrau",
-    "5 - Sudura TIG",
-    "6 - Sudura MIG-MAG",
-    "7 - Asamblare",
-    "8 - Lacatuserie",
-    "9 - Prelucrari",
-    "10 - Sudura prin puncte",
-    "11 - Vopsire",
-    "12 - Zincare electrolitica",
-    "13 - Proiectare 3D",
-    "14 - Colaborare",
-    "15 - Gaurire",
-    "16 - Control",
-    "17 - Ambalare cu Palet",
-    "18 - Zencuire",
-    "19 - Satinare",
-    "20 - Ambalare Colet",
-    "21 - Sudura LASER",
-    "22 - Anodizare natur",
-    "23 - Sablare fina microblasting",
-    "24 - Frezare 3 axe",
-    "1024 - Ambalare Bulk",
-]
-
-saved_id = load_workcenter_config()
-if saved_id:
-    for value in workcenter_dropdown["values"]:
-        if value.startswith(f"{saved_id} "):
-            workcenter_var.set(value)
-            selected_workcenter_id = saved_id
-            break
-
-nume_label = tk.Label(root, text="", font=("Arial", 14, "bold"))
-nume_label.pack(pady=5)
-mesaj_label = tk.Label(root, text="", font=("Arial", 12))
-mesaj_label.pack(pady=5)
-
-debug_button = tk.Button(root, text="Debug", command=show_debug_window, font=("Arial", 10))
-debug_button.pack(pady=5)
-
-
-def on_scan_detected(uid, hce_id):
-    global selected_workcenter_id
-    try:
-        selected = workcenter_var.get()
-        if not selected:
-            mesaj_label.config(text="Selecteaza WorkCenter!", fg="red")
-            return
-
-        selected_workcenter_id = int(selected.split(" - ")[0])
-        save_workcenter_config(selected_workcenter_id)
-        append_debug_log(f"WorkCenter selectat: {selected_workcenter_id}")
-        scan(uid, hce_id)
-    except Exception as e:
-        append_debug_log(f"Eroare scanare UI: {e}")
-        mesaj_label.config(text=f"Eroare scanare: {e}", fg="red")
-
-
-def get_preferred_scan_data(initial_scan_data):
-    uid = initial_scan_data.get("uid", "")
-    hce_id = initial_scan_data.get("hce_id", "")
-    reader_name = initial_scan_data.get("reader", "")
-    append_debug_log(f"Citire initiala reader: reader='{reader_name}' | uid='{uid}' | hce='{hce_id}'")
-
-    if hce_id:
-        append_debug_log("HCE detectat imediat, folosesc telefonul")
-        return uid, hce_id
-
-    if not uid:
-        append_debug_log("Nicio valoare utila detectata la citirea initiala")
-        return "", ""
-
-    deadline = time.time() + PHONE_SCAN_WAIT_SECONDS
-    while time.time() < deadline:
-        time.sleep(PHONE_SCAN_POLL_SECONDS)
-        retry_scan_data = get_scan_data()
-        if not retry_scan_data:
-            continue
-
-        retry_uid = retry_scan_data.get("uid", "") or uid
-        retry_hce_id = retry_scan_data.get("hce_id", "")
-        retry_reader_name = retry_scan_data.get("reader", "")
-        append_debug_log(
-            f"Retry reader: reader='{retry_reader_name}' | uid='{retry_uid}' | hce='{retry_hce_id}'"
-        )
-        if retry_hce_id:
-            append_debug_log("HCE detectat in fereastra de asteptare")
-            return retry_uid, retry_hce_id
-
-    append_debug_log("Nu a aparut HCE in timp util, folosesc UID-ul de cartela")
-    return uid, ""
-
-
-def nfc_thread():
-    global last_scan_key, last_scan_time
-    while True:
-        scan_data = get_scan_data()
-        if scan_data:
-            uid, hce_id = get_preferred_scan_data(scan_data)
-            scan_key = normalize_scan_value(hce_id) or normalize_scan_value(uid)
-            current_time = time.time()
-
-            if scan_key and (scan_key != last_scan_key or (current_time - last_scan_time) > 3):
-                last_scan_key = scan_key
-                last_scan_time = current_time
-                append_debug_log(f"Scan acceptat de thread: uid='{uid}' | hce='{hce_id}' | key='{scan_key}'")
-                on_scan_detected(uid, hce_id)
-
-        time.sleep(1)
-
-
-threading.Thread(target=nfc_thread, daemon=True).start()
-
-
-def notificare_check(nume, tip_eveniment):
-    toaster.show_toast(
-        "Scanare Pontaj",
-        f"{nume}\nEveniment: {tip_eveniment}",
-        icon_path=get_icon_path(),
-        duration=5,
-        threaded=True,
-    )
-
-
-def scan(uid, hce_id):
-    global selected_workcenter_id
-
-    success, mesaj, nume_complet = direct_scan(hce_id, uid, selected_workcenter_id)
-    append_debug_log(f"Mesaj final aplicatie: success={success} | mesaj='{mesaj}' | nume='{nume_complet}'")
+def show_result(success, message, name):
+    set_busy(False)
+    name_var.set(name)
+    result_var.set(message)
+    result_label.config(foreground="#19734b" if success else "#b33232")
+    status_var.set("Gata pentru următoarea pontare" if success else "Pontarea nu a fost înregistrată")
+    pin_var.set("")
+    pin_entry.focus_set()
     if success:
-        mesaj_label.config(text=mesaj or "Succes!", fg="green")
-        nume_label.config(text=nume_complet)
-
-        mesaj_lower = (mesaj or "").lower()
-        if "check-out" in mesaj_lower or "checkout" in mesaj_lower:
-            tip_eveniment = "Check-out"
-        elif "check-in" in mesaj_lower or "checkin" in mesaj_lower:
-            tip_eveniment = "Check-in"
-        else:
-            tip_eveniment = "Scanare"
-
-        notificare_check(nume_complet, tip_eveniment)
-    else:
-        mesaj_label.config(text=mesaj, fg="red")
+        try:
+            ctypes.windll.user32.MessageBeep(0x00000040)
+        except Exception:
+            pass
 
 
-def on_quit(icon, item):
-    if icon:
-        icon.stop()
-    root.after(0, root.destroy)
-    sys.exit()
+def submit_pin(event=None):
+    pin = pin_var.get().strip()
+    if not pin.isdigit():
+        show_result(False, "PIN-ul trebuie să conțină numai cifre.", "")
+        return
+    perform_pontaj("pin", pin)
+
+
+def load_workcenters():
+    try:
+        conn = get_db_connection()
+        rows = conn.cursor().execute("SELECT WorkCenterID, RTRIM(Denumire) FROM WorkCenter ORDER BY WorkCenterID").fetchall()
+        conn.close()
+        values = [f"{row[0]} - {row[1]}" for row in rows]
+        root.after(0, lambda: apply_workcenters(values))
+    except Exception as exc:
+        debug(f"Nu pot încărca WorkCenter-ele: {exc}")
+        root.after(0, lambda: status_var.set(f"Eroare SQL: {exc}"))
+
+
+def apply_workcenters(values):
+    workcenter_combo["values"] = values
+    saved = str(config.get("workcenter_id", ""))
+    selected = next((item for item in values if item.startswith(saved + " - ")), "")
+    if selected:
+        workcenter_var.set(selected)
+
+
+def unlock_workcenter(event=None):
+    if workcenter_combo["state"] == "readonly":
+        return
+    password = simpledialog.askstring("Configurare", "Parola pentru schimbarea WorkCenter-ului:", show="*")
+    if password == SETTINGS_PASSWORD:
+        workcenter_combo.config(state="readonly")
+    elif password is not None:
+        messagebox.showerror("Parolă", "Parolă incorectă.")
+
+
+def workcenter_changed(event=None):
+    value = workcenter_var.get()
+    if " - " not in value:
+        return
+    wc_id, name = value.split(" - ", 1)
+    config["workcenter_id"] = wc_id
+    config["workcenter_name"] = name
+    save_config()
+    status_var.set(f"Stație configurată: {name}")
+
+
+def change_server():
+    password = simpledialog.askstring("Configurare", "Parola de configurare:", show="*")
+    if password != SETTINGS_PASSWORD:
+        return
+    value = simpledialog.askstring("Server actualizări", "Adresa containerului:", initialvalue=config["server_url"])
+    if value:
+        config["server_url"] = value.strip().rstrip("/")
+        save_config()
+        threading.Thread(target=heartbeat, daemon=True).start()
+
+
+def run_preflight():
+    global last_preflight
+    result = {"driver": False, "database": False, "nfc": False, "server": False}
+    details = []
+    driver = available_sql_driver()
+    result["driver"] = bool(driver)
+    details.append(f"ODBC: {driver or 'lipsește'}")
+    if driver:
+        try:
+            conn = get_db_connection(timeout=3)
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1").fetchone()
+            pin_column = detect_pin_column(cursor)
+            conn.close()
+            result["database"] = True
+            details.append(f"SQL: conectat; PIN: {pin_column or 'coloană negăsită'}")
+        except Exception as exc:
+            details.append(f"SQL: {exc}")
+    try:
+        from smartcard.System import readers
+        reader_names = [str(item) for item in readers()]
+        result["nfc"] = bool(reader_names)
+        details.append("NFC: " + (", ".join(reader_names) if reader_names else "niciun cititor; PIN-ul rămâne disponibil"))
+    except Exception as exc:
+        details.append(f"NFC: {exc}")
+    try:
+        response = requests.get(config["server_url"] + "/api/version", timeout=3)
+        response.raise_for_status()
+        result["server"] = True
+        details.append(f"Update server: online, v{response.json().get('version', '?')}")
+    except Exception as exc:
+        details.append(f"Update server: indisponibil ({exc})")
+    last_preflight = result
+    debug("Preflight | " + " | ".join(details))
+    root.after(0, lambda: update_preflight_ui(result, details))
+
+
+def update_preflight_ui(result, details):
+    preflight_var.set("  ·  ".join([
+        ("✓" if result["driver"] else "✕") + " Driver SQL",
+        ("✓" if result["database"] else "✕") + " Bază de date",
+        ("✓" if result["nfc"] else "!") + " Cititor NFC",
+        ("✓" if result["server"] else "!") + " Server update",
+    ]))
+    status_var.set("Gata pentru pontare" if result["database"] else "Verifică diagnosticul; baza SQL nu este accesibilă")
+
+
+def version_tuple(value):
+    parts = []
+    for part in str(value).split("."):
+        digits = "".join(char for char in part if char.isdigit())
+        parts.append(int(digits or 0))
+    return tuple((parts + [0, 0, 0])[:3])
+
+
+def heartbeat(status="online", detail=""):
+    global update_started
+    try:
+        payload = {
+            "client_id": config["client_id"],
+            "hostname": socket.gethostname(),
+            "workcenter_id": config.get("workcenter_id", ""),
+            "workcenter_name": config.get("workcenter_name", ""),
+            "version": APP_VERSION,
+            "status": status,
+            "detail": detail,
+        }
+        response = requests.post(config["server_url"] + "/api/clients/heartbeat", json=payload, timeout=8)
+        response.raise_for_status()
+        update = response.json().get("update", {})
+        if (
+            not update_started and getattr(sys, "frozen", False)
+            and update.get("download_available")
+            and version_tuple(update.get("version")) > version_tuple(APP_VERSION)
+        ):
+            update_started = True
+            debug(f"Actualizare găsită: {APP_VERSION} -> {update.get('version')}")
+            download_and_install_update(update)
+    except Exception as exc:
+        debug(f"Heartbeat eșuat: {exc}")
+
+
+def download_and_install_update(update):
+    global update_started
+    try:
+        root.after(0, lambda: status_var.set(f"Se descarcă actualizarea v{update['version']}…"))
+        response = requests.get(update["download_url"], timeout=180, stream=True)
+        response.raise_for_status()
+        target = Path(tempfile.gettempdir()) / f"{APP_NAME}-{update['version']}.exe"
+        digest = hashlib.sha256()
+        with target.open("wb") as stream:
+            for chunk in response.iter_content(1024 * 1024):
+                if chunk:
+                    stream.write(chunk)
+                    digest.update(chunk)
+        if update.get("sha256") and digest.hexdigest().lower() != update["sha256"].lower():
+            raise RuntimeError("Semnătura SHA-256 a actualizării nu corespunde.")
+        current = Path(sys.executable).resolve()
+        script = Path(tempfile.gettempdir()) / f"{APP_NAME}-update.cmd"
+        script.write_text(
+            "@echo off\r\n"
+            "timeout /t 3 /nobreak >nul\r\n"
+            f'copy /y "{target}" "{current}" >nul\r\n'
+            f'start "" "{current}"\r\n'
+            f'del /q "{target}"\r\n'
+            'del /q "%~f0"\r\n',
+            encoding="utf-8",
+        )
+        heartbeat("updating", f"Actualizare la v{update['version']}")
+        subprocess.Popen(["cmd.exe", "/c", str(script)], creationflags=subprocess.CREATE_NO_WINDOW)
+        root.after(0, root.destroy)
+    except Exception as exc:
+        update_started = False
+        debug(f"Actualizare eșuată: {exc}")
+        root.after(0, lambda: status_var.set(f"Actualizarea a eșuat: {exc}"))
+
+
+def heartbeat_loop():
+    while True:
+        heartbeat()
+        time.sleep(HEARTBEAT_SECONDS)
+
+
+def preferred_scan(initial):
+    uid = initial.get("uid", "")
+    hce = initial.get("hce_id", "")
+    if hce:
+        return "hce", hce
+    deadline = time.time() + PHONE_SCAN_WAIT_SECONDS
+    while uid and time.time() < deadline:
+        time.sleep(.25)
+        retry = get_scan_data()
+        if retry and retry.get("hce_id"):
+            return "hce", retry["hce_id"]
+    return "uid", uid
+
+
+def nfc_loop():
+    last_key = ""
+    last_seen = 0.0
+    while True:
+        try:
+            scan = get_scan_data()
+            if scan:
+                identifier_type, identifier = preferred_scan(scan)
+                key = f"{identifier_type}:{normalize_hce(identifier)}"
+                if identifier and key != last_key:
+                    root.after(0, lambda t=identifier_type, value=identifier: perform_pontaj(t, value))
+                last_key = key
+                last_seen = time.time()
+            elif time.time() - last_seen > 1.2:
+                last_key = ""
+        except Exception as exc:
+            debug(f"Cititor NFC: {exc}")
+            time.sleep(4)
+        time.sleep(.8)
+
+
+def refresh_debug():
+    if not debug_widget or not debug_widget.winfo_exists():
+        return
+    debug_widget.config(state="normal")
+    debug_widget.delete("1.0", tk.END)
+    with debug_lock:
+        debug_widget.insert(tk.END, "\n".join(debug_logs))
+    debug_widget.see(tk.END)
+    debug_widget.config(state="disabled")
+
+
+def show_debug():
+    global debug_window, debug_widget
+    password = simpledialog.askstring("Diagnostic", "Parola de configurare:", show="*")
+    if password != SETTINGS_PASSWORD:
+        return
+    if debug_window and debug_window.winfo_exists():
+        debug_window.deiconify()
+        return
+    debug_window = tk.Toplevel(root)
+    debug_window.title("Diagnostic WorkCenter Pontaj")
+    debug_window.geometry("900x500")
+    debug_widget = scrolledtext.ScrolledText(debug_window, font=("Consolas", 10), state="disabled")
+    debug_widget.pack(fill="both", expand=True, padx=10, pady=10)
+    refresh_debug()
+
+
+def tray_image():
+    icon = resource_path("card.ico")
+    if icon.exists():
+        return Image.open(icon)
+    image = Image.new("RGBA", (64, 64), "#176b46")
+    ImageDraw.Draw(image).text((15, 22), "WC", fill="white")
+    return image
 
 
 def show_window(icon=None, item=None):
-    if tray_icon:
-        tray_icon.visible = False
     root.after(0, root.deiconify)
     root.after(0, root.lift)
-    root.after(0, root.focus_force)
 
 
-def ensure_tray_icon():
-    global tray_icon, tray_image
-    if tray_icon is not None:
-        return
-
-    tray_image = load_tray_image()
-    menu = pystray.Menu(
-        pystray.MenuItem("Deschide", show_window),
-        pystray.MenuItem("Iesi", on_quit),
-    )
-    tray_icon = pystray.Icon(
-        "Pontaj",
-        tray_image,
-        "Pontaj Smart",
-        menu,
-    )
-    threading.Thread(target=tray_icon.run, daemon=True).start()
-    time.sleep(0.3)
+def quit_app(icon=None, item=None):
+    heartbeat("offline", "Aplicație închisă")
+    if tray_icon:
+        tray_icon.stop()
+    root.after(0, root.destroy)
 
 
 def hide_window():
     global tray_icon
     root.withdraw()
-    ensure_tray_icon()
-    tray_icon.visible = True
+    if tray_icon is None:
+        menu = pystray.Menu(pystray.MenuItem("Deschide", show_window), pystray.MenuItem("Ieșire", quit_app))
+        tray_icon = pystray.Icon(APP_NAME, tray_image(), "WorkCenter Pontaj", menu)
+        threading.Thread(target=tray_icon.run, daemon=True).start()
 
 
-def on_closing():
-    hide_window()
+root = tk.Tk()
+root.title(f"WorkCenter Pontaj · v{APP_VERSION}")
+root.geometry("720x520")
+root.minsize(680, 500)
+root.protocol("WM_DELETE_WINDOW", hide_window)
 
+style = ttk.Style(root)
+style.configure("Title.TLabel", font=("Segoe UI", 22, "bold"))
+style.configure("Name.TLabel", font=("Segoe UI", 17, "bold"))
+style.configure("Result.TLabel", font=("Segoe UI", 12))
 
-root.protocol("WM_DELETE_WINDOW", on_closing)
+main = ttk.Frame(root, padding=24)
+main.pack(fill="both", expand=True)
+ttk.Label(main, text="WorkCenter Pontaj", style="Title.TLabel").pack(anchor="w")
+ttk.Label(main, text=f"Stația {socket.gethostname()} · versiunea {APP_VERSION}").pack(anchor="w", pady=(0, 18))
+
+workcenter_row = ttk.Frame(main)
+workcenter_row.pack(fill="x", pady=(0, 16))
+ttk.Label(workcenter_row, text="WorkCenter:").pack(side="left")
+workcenter_var = tk.StringVar()
+workcenter_combo = ttk.Combobox(workcenter_row, textvariable=workcenter_var, state="disabled", width=42)
+workcenter_combo.pack(side="left", padx=10, fill="x", expand=True)
+workcenter_combo.bind("<Button-1>", unlock_workcenter)
+workcenter_combo.bind("<<ComboboxSelected>>", workcenter_changed)
+ttk.Button(workcenter_row, text="Schimbă", command=unlock_workcenter).pack(side="left", padx=(0, 8))
+ttk.Button(workcenter_row, text="Server", command=change_server).pack(side="left")
+
+pin_box = ttk.LabelFrame(main, text="Pontare cu PIN", padding=18)
+pin_box.pack(fill="x")
+ttk.Label(pin_box, text="Introdu PIN-ul personal și apasă Enter:").pack(anchor="w")
+pin_row = ttk.Frame(pin_box)
+pin_row.pack(fill="x", pady=(8, 0))
+pin_var = tk.StringVar()
+pin_entry = ttk.Entry(pin_row, textvariable=pin_var, show="●", font=("Segoe UI", 20), justify="center")
+pin_entry.pack(side="left", fill="x", expand=True)
+pin_entry.bind("<Return>", submit_pin)
+pin_button = ttk.Button(pin_row, text="Pontează", command=submit_pin)
+pin_button.pack(side="left", padx=(10, 0))
+
+name_var = tk.StringVar()
+result_var = tk.StringVar(value="Poți folosi PIN-ul, cartela sau telefonul NFC.")
+ttk.Label(main, textvariable=name_var, style="Name.TLabel").pack(pady=(22, 4))
+result_label = ttk.Label(main, textvariable=result_var, style="Result.TLabel", wraplength=620, justify="center")
+result_label.pack()
+
+status_var = tk.StringVar(value="Se verifică sistemul…")
+preflight_var = tk.StringVar(value="Driver SQL  ·  Bază de date  ·  Cititor NFC  ·  Server update")
+ttk.Separator(main).pack(fill="x", pady=(22, 12))
+ttk.Label(main, textvariable=status_var).pack()
+ttk.Label(main, textvariable=preflight_var, foreground="#66736e").pack(pady=(4, 0))
+
+actions = ttk.Frame(main)
+actions.pack(fill="x", pady=(14, 0))
+ttk.Button(actions, text="Reverifică", command=lambda: threading.Thread(target=run_preflight, daemon=True).start()).pack(side="left")
+ttk.Button(actions, text="Diagnostic", command=show_debug).pack(side="right")
+
+root.update_idletasks()
+if not available_sql_driver():
+    install_bundled_drivers()
+threading.Thread(target=load_workcenters, daemon=True).start()
+threading.Thread(target=run_preflight, daemon=True).start()
+threading.Thread(target=heartbeat_loop, daemon=True).start()
+threading.Thread(target=nfc_loop, daemon=True).start()
+pin_entry.focus_set()
 root.mainloop()

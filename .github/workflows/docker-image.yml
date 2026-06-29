@@ -1,4 +1,4 @@
-name: Build and publish Docker image
+name: Build client and publish Docker image
 
 on:
   push:
@@ -11,11 +11,67 @@ permissions:
   packages: write
 
 jobs:
+  windows-client:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.app-version.outputs.value }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-client.txt
+
+      - name: Read application version
+        id: app-version
+        shell: pwsh
+        run: '"value=$((Get-Content VERSION -Raw).Trim())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append'
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements-client.txt
+
+      - name: Download official Microsoft prerequisites
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drivers | Out-Null
+          Invoke-WebRequest "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "drivers/vc_redist.x64.exe"
+          Invoke-WebRequest "https://go.microsoft.com/fwlink/?linkid=2358430" -OutFile "drivers/msodbcsql.msi"
+
+      - name: Build single-file Windows client
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed `
+            --name WorkCenterPontaj `
+            --icon card.ico `
+            --add-data "card.ico;." `
+            --add-data "VERSION;." `
+            --add-data "drivers;drivers" `
+            --hidden-import smartcard.scard._scard `
+            maintk.py
+
+      - name: Upload Windows client
+        uses: actions/upload-artifact@v4
+        with:
+          name: workcenter-windows-client
+          path: dist/WorkCenterPontaj.exe
+          if-no-files-found: error
+
   docker:
+    needs: windows-client
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download Windows client
+        uses: actions/download-artifact@v4
+        with:
+          name: workcenter-windows-client
+          path: downloads
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -34,6 +90,10 @@ jobs:
           push: true
           tags: |
             ghcr.io/unraidg5/workcenterpontare:latest
+            ghcr.io/unraidg5/workcenterpontare:${{ needs.windows-client.outputs.version }}
             ghcr.io/unraidg5/workcenterpontare:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.windows-client.outputs.version }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
