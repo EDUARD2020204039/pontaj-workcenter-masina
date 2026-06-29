@@ -3,7 +3,8 @@ FROM python:3.12-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    TZ=Europe/Bucharest
+    TZ=Europe/Bucharest \
+    APP_TIMEZONE=Europe/Bucharest
 
 WORKDIR /app
 

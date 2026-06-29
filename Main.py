@@ -4,8 +4,9 @@ import os
 import sqlite3
 import threading
 import time
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pyodbc
 import schedule
@@ -20,6 +21,7 @@ REGISTRY_DB = DATA_DIR / "workcenter_registry.db"
 VERSION_FILE = BASE_DIR / "VERSION"
 APP_VERSION = VERSION_FILE.read_text(encoding="utf-8").strip() if VERSION_FILE.exists() else "0.0.0"
 CLIENT_EXE_NAME = "WorkCenterPontaj.exe"
+APP_TZ = ZoneInfo(os.getenv("APP_TIMEZONE", "Europe/Bucharest"))
 
 app = Flask(__name__)
 log_messages = []
@@ -38,8 +40,19 @@ db_config = {
 }
 
 
+def now_local():
+    return datetime.now(APP_TZ)
+
+
+def parse_local_datetime(value):
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=APP_TZ)
+    return parsed.astimezone(APP_TZ)
+
+
 def log(message):
-    line = f"{datetime.now().strftime('%H:%M:%S')} | {message}"
+    line = f"{now_local().strftime('%H:%M:%S')} | {message}"
     with log_lock:
         log_messages.append(line)
         del log_messages[:-200]
@@ -168,8 +181,8 @@ def fetch_employee(identifier_type, identifier):
 def process_pontaj_for_employee(employee_id, workcenter_id):
     conn = get_db_connection()
     cursor = conn.cursor()
-    today = date.today()
-    now = datetime.now()
+    now = now_local().replace(tzinfo=None)
+    today = now.date()
     messages = []
     try:
         cursor.execute("SET XACT_ABORT ON; SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;")
@@ -389,7 +402,7 @@ def client_heartbeat():
     hostname = str(data.get("hostname", "")).strip()
     if not client_id or not hostname:
         return jsonify({"error": "client_id și hostname sunt obligatorii"}), 400
-    now = datetime.now().isoformat(timespec="seconds")
+    now = now_local().isoformat(timespec="seconds")
     with get_registry_connection() as conn:
         conn.execute(
             """
@@ -414,14 +427,14 @@ def client_heartbeat():
 
 @app.get("/api/clients")
 def clients():
-    cutoff = datetime.now() - timedelta(seconds=150)
+    cutoff = now_local() - timedelta(seconds=150)
     with get_registry_connection() as conn:
         rows = conn.execute("SELECT * FROM clients ORDER BY workcenter_name, hostname").fetchall()
     result = []
     for row in rows:
         item = dict(row)
         try:
-            item["online"] = datetime.fromisoformat(item["last_seen"]) >= cutoff
+            item["online"] = parse_local_datetime(item["last_seen"]) >= cutoff
         except (TypeError, ValueError):
             item["online"] = False
         item["update_available"] = bool(item.get("version") and item["version"] != APP_VERSION)
@@ -488,7 +501,7 @@ def close_abandoned_sessions():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        today = date.today()
+        today = now_local().date()
         rows = cursor.execute(
             "SELECT ID, WorkCenterID, Data, OraCheckIn FROM PontajWorkCenter WHERE Data < ? AND OraCheckOut IS NULL",
             today,

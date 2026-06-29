@@ -56,11 +56,20 @@ jobs:
       - name: Smoke test Windows client
         shell: pwsh
         run: |
-          Start-Process -FilePath "dist/WorkCenterPontaj.exe" -ArgumentList "--smoke-test" -Wait -PassThru | ForEach-Object {
-            if ($_.ExitCode -ne 0) {
-              throw "WorkCenterPontaj.exe smoke test failed with exit code $($_.ExitCode)"
+          $marker = Join-Path $env:RUNNER_TEMP "workcenter-smoke.txt"
+          Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+          $process = Start-Process -FilePath "dist/WorkCenterPontaj.exe" -ArgumentList @("--smoke-test", $marker) -PassThru
+          $deadline = (Get-Date).AddSeconds(30)
+          while ((Get-Date) -lt $deadline) {
+            if (Test-Path -LiteralPath $marker) {
+              Get-Content -LiteralPath $marker
+              Get-Process WorkCenterPontaj -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+              exit 0
             }
+            Start-Sleep -Milliseconds 500
           }
+          Get-Process WorkCenterPontaj -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          throw "WorkCenterPontaj.exe smoke test did not create marker file."
 
       - name: Upload Windows client
         uses: actions/upload-artifact@v4

@@ -59,6 +59,21 @@ function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
 }
 
+function formatBucharestTime(value) {
+    if (!value) return '—';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat('ro-RO', {
+        timeZone: 'Europe/Bucharest',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+    }).format(date);
+}
+
 async function getJson(url) {
     const response = await fetch(url, {cache: 'no-store'});
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -82,7 +97,7 @@ async function loadStations() {
                 <dl>
                     <div><dt>Versiune</dt><dd>v${escapeHtml(item.version || '?')}${item.update_available ? ' · actualizare în curs' : ''}</dd></div>
                     <div><dt>IP</dt><dd>${escapeHtml(item.ip_address || '—')}</dd></div>
-                    <div><dt>Ultima comunicare</dt><dd>${escapeHtml(item.last_seen || '—')}</dd></div>
+                    <div><dt>Ultima comunicare</dt><dd>${escapeHtml(formatBucharestTime(item.last_seen))}</dd></div>
                 </dl>
                 ${item.detail ? `<p class="detail">${escapeHtml(item.detail)}</p>` : ''}
             </article>`).join('');

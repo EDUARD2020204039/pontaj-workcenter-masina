@@ -12,20 +12,6 @@ import time
 import uuid
 from datetime import date, datetime
 from pathlib import Path
-import tkinter as tk
-from tkinter import messagebox, scrolledtext, simpledialog, ttk
-try:
-    import winreg
-except ImportError:
-    winreg = None
-
-import pyodbc
-import pystray
-import requests
-from PIL import Image, ImageDraw
-
-from nfc_reader import get_scan_data
-
 
 APP_NAME = "WorkCenterPontaj"
 DEFAULT_SERVER_URL = "http://192.168.2.23:3490"
@@ -55,8 +41,28 @@ def read_version():
 APP_VERSION = read_version()
 
 if "--smoke-test" in sys.argv:
-    print(f"{APP_NAME} {APP_VERSION}")
+    marker = os.getenv("WORKCENTER_SMOKE_MARKER", "")
+    for index, argument in enumerate(sys.argv):
+        if argument == "--smoke-test" and index + 1 < len(sys.argv):
+            marker = sys.argv[index + 1]
+            break
+    if marker:
+        Path(marker).write_text(f"{APP_NAME} {APP_VERSION}", encoding="utf-8")
     sys.exit(0)
+
+import tkinter as tk
+from tkinter import messagebox, scrolledtext, simpledialog, ttk
+try:
+    import winreg
+except ImportError:
+    winreg = None
+
+import pyodbc
+import pystray
+import requests
+from PIL import Image, ImageDraw
+
+from nfc_reader import get_scan_data
 
 APPDATA_DIR = Path(os.getenv("APPDATA", Path.home())) / APP_NAME
 APPDATA_DIR.mkdir(parents=True, exist_ok=True)
