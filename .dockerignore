@@ -1,0 +1,12 @@
+.git
+.github
+.idea
+__pycache__
+*.py[cod]
+*.spec
+*.ico
+build
+dist
+maintk.py
+nfc_reader.py
+config.json
