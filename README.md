@@ -18,7 +18,7 @@ Variabile opționale pentru suprascrierea conexiunii incluse:
 - `DB_DRIVER` (implicit `ODBC Driver 18 for SQL Server`)
 - `API_TOKEN` (dacă este configurat, protejează endpoint-urile de pontaj)
 
-Pagina `http://ADRESA_UNRAID:3490/` afișează stațiile, versiunile, angajații activi și linkul pentru executabil.
+Pagina `http://192.168.2.23:3490/` afișează stațiile, versiunile, angajații activi și linkul pentru executabil.
 
 ## Client Windows
 

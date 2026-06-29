@@ -24,7 +24,8 @@ from nfc_reader import get_scan_data
 
 
 APP_NAME = "WorkCenterPontaj"
-DEFAULT_SERVER_URL = "http://192.168.2.1:3490"
+DEFAULT_SERVER_URL = "http://192.168.2.23:3490"
+LEGACY_SERVER_URLS = {"http://192.168.2.1:3490"}
 SETTINGS_PASSWORD = "XXX"
 HEARTBEAT_SECONDS = 60
 REPEAT_SCAN_SECONDS = 5
@@ -68,6 +69,8 @@ def load_config():
     try:
         if CONFIG_FILE.exists():
             config.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
+        if str(config.get("server_url", "")).rstrip("/") in LEGACY_SERVER_URLS:
+            config["server_url"] = DEFAULT_SERVER_URL
     except Exception:
         pass
     return config
