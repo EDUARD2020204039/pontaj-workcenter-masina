@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <title>Pontaj Zilnic</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<select id="workcenter-select" style="margin-bottom:20px; padding:8px; font-size:16px;">
+    <option value="">-- Selectează WorkCenter --</option>
+</select>
+
+    <div class="container">
+        <h1>Pontaj Zilnic – NFC</h1>
+        <p id="info">📶 Aștept scanarea cardului NFC...</p>
+        <p id="nume" style="font-size: 24px; font-weight: bold;"></p>
+        <p id="mesaj" style="font-size: 18px; color: green;"></p>
+    </div>
+
+    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const wcSelect = document.getElementById('workcenter-select');
+
+        // Populare dropdown WorkCenter
+        fetch('/workcenters')
+            .then(response => response.json())
+            .then(workcenters => {
+                workcenters.forEach(wc => {
+                    const opt = document.createElement('option');
+                    opt.value = wc.id;
+                    opt.textContent = wc.denumire;
+                    wcSelect.appendChild(opt);
+                });
+
+                const savedWC = localStorage.getItem('selectedWorkCenter');
+                if (savedWC) {
+                    wcSelect.value = savedWC;
+                }
+            });
+
+        wcSelect.addEventListener('change', function () {
+            localStorage.setItem('selectedWorkCenter', this.value);
+        });
+    });
+
+    // Inițializare WebSocket
+    const socket = io();
+
+    socket.on('connect', () => {
+        console.log("✅ Conectat la WebSocket.");
+    });
+
+    socket.on('nfc_detected', (data) => {
+        console.log("🎯 UID detectat:", data.uid);
+
+        const selectedWorkCenter = localStorage.getItem('selectedWorkCenter');
+        if (!selectedWorkCenter) {
+            alert("Te rog selectează WorkCenter-ul mai întâi!");
+            return;
+        }
+
+        const url = `/scan?workcenter_id=${selectedWorkCenter}`;
+        console.log("🔁 Trimitem request la:", url);
+
+        fetch(url)
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    document.getElementById("nume").innerText = `${data.nume} ${data.prenume}`;
+                    const mesajEl = document.getElementById("mesaj");
+                        mesajEl.innerText = data.message;
+
+                    if (data.message.includes("5 secunde")) {
+                        mesajEl.style.color = "red";
+                    } else {
+                        mesajEl.style.color = "green";
+                    }
+
+                    document.getElementById("info").innerText = "";
+
+                    setTimeout(() => {
+                        document.getElementById("nume").innerText = "";
+                        document.getElementById("mesaj").innerText = "";
+                        document.getElementById("info").innerText = "📶 Aștept scanarea cardului NFC...";
+                    }, 3000);
+                } else {
+                    const mesajEl = document.getElementById("mesaj");
+                        mesajEl.innerText = data.message;
+
+                    if (data.message.includes("5 secunde")) {
+                        mesajEl.style.color = "red";
+                    } else {
+                        mesajEl.style.color = "green";
+                    }
+
+                }
+            })
+            .catch((error) => {
+                console.error("❌ Eroare la fetch:", error);
+                document.getElementById("mesaj").innerText = "Eroare la server.";
+            });
+    });
+</script>
+
+</body>
+</html>
