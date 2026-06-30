@@ -41,12 +41,53 @@ jobs:
           Invoke-WebRequest "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "drivers/vc_redist.x64.exe"
           Invoke-WebRequest "https://go.microsoft.com/fwlink/?linkid=2358430" -OutFile "drivers/msodbcsql.msi"
 
+      - name: Generate Windows version metadata
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build | Out-Null
+          $version = "${{ steps.app-version.outputs.value }}"
+          $parts = @($version.Split('.') | ForEach-Object { [int]$_ })
+          while ($parts.Count -lt 4) { $parts += 0 }
+          $fileVersion = "$($parts[0]), $($parts[1]), $($parts[2]), $($parts[3])"
+          @"
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=($fileVersion),
+    prodvers=($fileVersion),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        '041804b0',
+        [
+          StringStruct('CompanyName', 'HABA Productie'),
+          StringStruct('FileDescription', 'WorkCenter Pontaj'),
+          StringStruct('FileVersion', '$version'),
+          StringStruct('InternalName', 'WorkCenterPontaj'),
+          StringStruct('OriginalFilename', 'WorkCenterPontaj.exe'),
+          StringStruct('ProductName', 'WorkCenter Pontaj'),
+          StringStruct('ProductVersion', '$version')
+        ]
+      )
+    ]),
+    VarFileInfo([VarStruct('Translation', [1048, 1200])])
+  ]
+)
+          "@ | Set-Content -Path build/version_info.txt -Encoding UTF8
+
       - name: Build single-file Windows client
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onefile --windowed `
+          pyinstaller --noconfirm --clean --noupx --onefile --windowed `
             --name WorkCenterPontaj `
             --icon card.ico `
+            --version-file build/version_info.txt `
             --add-data "card.ico;." `
             --add-data "VERSION;." `
             --add-data "drivers;drivers" `

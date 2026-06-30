@@ -92,6 +92,22 @@ def load_config():
 
 
 config = load_config()
+single_instance_mutex = None
+
+
+def ensure_single_instance():
+    global single_instance_mutex
+    if platform.system() != "Windows":
+        return
+    try:
+        single_instance_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, APP_NAME)
+        if ctypes.windll.kernel32.GetLastError() == 183:
+            sys.exit(0)
+    except Exception:
+        pass
+
+
+ensure_single_instance()
 
 
 def save_config():
@@ -490,54 +506,52 @@ def download_and_install_update(update):
         if update.get("sha256") and digest.hexdigest().lower() != update["sha256"].lower():
             raise RuntimeError("Semnătura SHA-256 a actualizării nu corespunde.")
         current = Path(sys.executable).resolve()
-        script = Path(tempfile.gettempdir()) / f"{APP_NAME}-update.ps1"
+        script = Path(tempfile.gettempdir()) / f"{APP_NAME}-update.cmd"
         updater_log = APPDATA_DIR / "updater.log"
         current_pid = os.getpid()
         script.write_text(
-            "$ErrorActionPreference = 'Continue'\n"
-            f"$Source = {json.dumps(str(target))}\n"
-            f"$Target = {json.dumps(str(current))}\n"
-            f"$LogFile = {json.dumps(str(updater_log))}\n"
-            f"$OldPid = {current_pid}\n"
-            "function Write-UpdateLog([string]$Message) {\n"
-            "    $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'\n"
-            "    Add-Content -LiteralPath $LogFile -Encoding UTF8 -Value \"[$stamp] $Message\"\n"
-            "}\n"
-            "Write-UpdateLog \"Updater pornit. Source=$Source Target=$Target OldPid=$OldPid\"\n"
-            "Start-Sleep -Seconds 2\n"
-            "try {\n"
-            "    $process = Get-Process -Id $OldPid -ErrorAction SilentlyContinue\n"
-            "    if ($process) {\n"
-            "        Write-UpdateLog \"Aștept închiderea aplicației vechi.\"\n"
-            "        if (-not $process.WaitForExit(10000)) {\n"
-            "            Write-UpdateLog \"Aplicația veche încă rulează; o închid forțat.\"\n"
-            "            Stop-Process -Id $OldPid -Force -ErrorAction SilentlyContinue\n"
-            "            Start-Sleep -Seconds 2\n"
-            "        }\n"
-            "    }\n"
-            "} catch { Write-UpdateLog \"Verificare proces vechi eșuată: $($_.Exception.Message)\" }\n"
-            "for ($attempt = 1; $attempt -le 40; $attempt++) {\n"
-            "    try {\n"
-            "        Copy-Item -LiteralPath $Source -Destination $Target -Force -ErrorAction Stop\n"
-            "        Write-UpdateLog \"Copiere reușită la încercarea $attempt.\"\n"
-            "        Start-Process -FilePath $Target\n"
-            "        Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue\n"
-            "        Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\n"
-            "        exit 0\n"
-            "    } catch {\n"
-            "        Write-UpdateLog \"Încercarea $attempt a eșuat: $($_.Exception.Message)\"\n"
-            "        Start-Sleep -Seconds 1\n"
-            "    }\n"
-            "}\n"
-            "Write-UpdateLog \"Actualizarea a eșuat după 40 de încercări; repornesc versiunea existentă.\"\n"
-            "Start-Process -FilePath $Target\n"
-            "exit 1\n",
-            encoding="utf-8-sig",
+            "@echo off\r\n"
+            "setlocal enableextensions\r\n"
+            f'set "SOURCE={str(target).replace("%", "%%")}"\r\n'
+            f'set "TARGET={str(current).replace("%", "%%")}"\r\n'
+            f'set "LOGFILE={str(updater_log).replace("%", "%%")}"\r\n'
+            f'set "OLDPID={current_pid}"\r\n'
+            'call :log "Updater pornit. Source=%SOURCE% Target=%TARGET% OldPid=%OLDPID%"\r\n'
+            "timeout /t 2 /nobreak >nul\r\n"
+            "for /l %%I in (1,1,15) do (\r\n"
+            '    tasklist /fi "PID eq %OLDPID%" | find "%OLDPID%" >nul\r\n'
+            "    if errorlevel 1 goto copy_update\r\n"
+            '    call :log "Astept inchiderea aplicatiei vechi, incercarea %%I."\r\n'
+            "    timeout /t 1 /nobreak >nul\r\n"
+            ")\r\n"
+            'call :log "Aplicatia veche inca ruleaza; o inchid fortat."\r\n'
+            "taskkill /pid %OLDPID% /f >nul 2>nul\r\n"
+            "timeout /t 2 /nobreak >nul\r\n"
+            ":copy_update\r\n"
+            "for /l %%I in (1,1,40) do (\r\n"
+            '    copy /y "%SOURCE%" "%TARGET%" >nul 2>>"%LOGFILE%"\r\n'
+            "    if not errorlevel 1 (\r\n"
+            '        call :log "Copiere reusita la incercarea %%I."\r\n'
+            '        start "" "%TARGET%"\r\n'
+            '        del /q "%SOURCE%" >nul 2>nul\r\n'
+            '        del /q "%~f0" >nul 2>nul\r\n'
+            "        exit /b 0\r\n"
+            "    )\r\n"
+            '    call :log "Copiere esuata la incercarea %%I."\r\n'
+            "    timeout /t 1 /nobreak >nul\r\n"
+            ")\r\n"
+            'call :log "Actualizarea a esuat dupa 40 de incercari; repornesc versiunea existenta."\r\n'
+            'start "" "%TARGET%"\r\n'
+            "exit /b 1\r\n"
+            ":log\r\n"
+            '>>"%LOGFILE%" echo [%date% %time%] %~1\r\n'
+            "exit /b 0\r\n",
+            encoding="utf-8",
         )
         heartbeat("updating", f"Actualizare la v{update['version']}")
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
         subprocess.Popen(
-            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            ["cmd.exe", "/c", str(script)],
             creationflags=creationflags,
             close_fds=True,
         )
@@ -629,7 +643,8 @@ def ensure_startup_registration():
     if platform.system() != "Windows" or winreg is None or not getattr(sys, "frozen", False):
         return
     try:
-        command = f'"{Path(sys.executable).resolve()}" --minimized'
+        exe_path = Path(sys.executable).resolve()
+        command = f'"{exe_path}" --minimized'
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
             r"Software\Microsoft\Windows\CurrentVersion\Run",
@@ -637,7 +652,22 @@ def ensure_startup_registration():
             winreg.KEY_SET_VALUE,
         ) as key:
             winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, command)
-        debug("Pornire automată configurată pentru Windows startup.")
+        startup_dir = (
+            Path(os.getenv("APPDATA", ""))
+            / "Microsoft"
+            / "Windows"
+            / "Start Menu"
+            / "Programs"
+            / "Startup"
+        )
+        startup_dir.mkdir(parents=True, exist_ok=True)
+        startup_script = startup_dir / f"{APP_NAME}.cmd"
+        startup_script.write_text(
+            "@echo off\r\n"
+            f'start "" "{str(exe_path).replace("%", "%%")}" --minimized\r\n',
+            encoding="utf-8",
+        )
+        debug("Pornire automată configurată în Registry și Startup folder.")
     except Exception as exc:
         debug(f"Nu am putut configura pornirea automată: {exc}")
 
