@@ -51,7 +51,7 @@ if "--smoke-test" in sys.argv:
     sys.exit(0)
 
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, simpledialog, ttk
+from tkinter import messagebox, scrolledtext, ttk
 try:
     import winreg
 except ImportError:
@@ -68,6 +68,7 @@ APPDATA_DIR = Path(os.getenv("APPDATA", Path.home())) / APP_NAME
 APPDATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = APPDATA_DIR / "config.json"
 LOG_FILE = APPDATA_DIR / "client.log"
+touch_keyboard_last_open = 0.0
 
 
 def default_config():
@@ -136,6 +137,80 @@ def debug(message):
             pass
     if debug_widget and debug_widget.winfo_exists():
         root.after(0, refresh_debug)
+
+
+def show_touch_keyboard(event=None):
+    global touch_keyboard_last_open
+    if platform.system() != "Windows":
+        return
+    now = time.time()
+    if now - touch_keyboard_last_open < 1.5:
+        return
+    touch_keyboard_last_open = now
+    candidates = [
+        Path(os.getenv("ProgramFiles", r"C:\Program Files"))
+        / "Common Files"
+        / "microsoft shared"
+        / "ink"
+        / "TabTip.exe",
+        Path(os.getenv("CommonProgramFiles", r"C:\Program Files\Common Files"))
+        / "microsoft shared"
+        / "ink"
+        / "TabTip.exe",
+    ]
+    try:
+        for candidate in candidates:
+            if candidate.exists():
+                os.startfile(candidate)
+                return
+        subprocess.Popen(["osk.exe"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception as exc:
+        debug(f"Nu pot porni tastatura pe ecran: {exc}")
+
+
+def prompt_text(title, message, show=None, initialvalue=""):
+    dialog = tk.Toplevel(root)
+    dialog.title(title)
+    dialog.transient(root)
+    dialog.grab_set()
+    dialog.resizable(False, False)
+    dialog.configure(padx=22, pady=18)
+
+    value = tk.StringVar(value=initialvalue or "")
+    result = {"value": None}
+
+    ttk.Label(dialog, text=message, wraplength=420, justify="left").pack(anchor="w", pady=(0, 10))
+    entry = ttk.Entry(dialog, textvariable=value, show=show or "", font=("Segoe UI", 16), width=34)
+    entry.pack(fill="x")
+    entry.bind("<FocusIn>", show_touch_keyboard)
+    entry.bind("<ButtonRelease-1>", show_touch_keyboard)
+
+    buttons = ttk.Frame(dialog)
+    buttons.pack(fill="x", pady=(16, 0))
+
+    def accept(event=None):
+        result["value"] = value.get()
+        dialog.destroy()
+
+    def cancel(event=None):
+        result["value"] = None
+        dialog.destroy()
+
+    ttk.Button(buttons, text="OK", command=accept).pack(side="right")
+    ttk.Button(buttons, text="Anulează", command=cancel).pack(side="right", padx=(0, 10))
+    entry.bind("<Return>", accept)
+    dialog.bind("<Escape>", cancel)
+    dialog.protocol("WM_DELETE_WINDOW", cancel)
+
+    dialog.update_idletasks()
+    x = root.winfo_rootx() + max(0, (root.winfo_width() - dialog.winfo_width()) // 2)
+    y = root.winfo_rooty() + max(0, (root.winfo_height() - dialog.winfo_height()) // 2)
+    dialog.geometry(f"+{x}+{y}")
+    entry.focus_set()
+    entry.icursor(tk.END)
+    dialog.after(250, show_touch_keyboard)
+    root.wait_window(dialog)
+    return result["value"]
 
 
 def available_sql_driver():
@@ -379,7 +454,7 @@ def apply_workcenters(values):
 def unlock_workcenter(event=None):
     if workcenter_combo["state"] == "readonly":
         return
-    password = simpledialog.askstring("Configurare", "Parola pentru schimbarea WorkCenter-ului:", show="*")
+    password = prompt_text("Configurare", "Parola pentru schimbarea WorkCenter-ului:", show="*")
     if password == SETTINGS_PASSWORD:
         workcenter_combo.config(state="readonly")
     elif password is not None:
@@ -398,10 +473,10 @@ def workcenter_changed(event=None):
 
 
 def change_server():
-    password = simpledialog.askstring("Configurare", "Parola de configurare:", show="*")
+    password = prompt_text("Configurare", "Parola de configurare:", show="*")
     if password != SETTINGS_PASSWORD:
         return
-    value = simpledialog.askstring("Server actualizări", "Adresa containerului:", initialvalue=config["server_url"])
+    value = prompt_text("Server actualizări", "Adresa containerului:", initialvalue=config["server_url"])
     if value:
         config["server_url"] = value.strip().rstrip("/")
         save_config()
@@ -616,7 +691,7 @@ def refresh_debug():
 
 def show_debug():
     global debug_window, debug_widget
-    password = simpledialog.askstring("Diagnostic", "Parola de configurare:", show="*")
+    password = prompt_text("Diagnostic", "Parola de configurare:", show="*")
     if password != SETTINGS_PASSWORD:
         return
     if debug_window and debug_window.winfo_exists():
@@ -752,6 +827,8 @@ pin_var = tk.StringVar()
 pin_entry = ttk.Entry(pin_row, textvariable=pin_var, show="●", font=("Segoe UI", 20), justify="center")
 pin_entry.pack(side="left", fill="x", expand=True)
 pin_entry.bind("<Return>", submit_pin)
+pin_entry.bind("<FocusIn>", show_touch_keyboard)
+pin_entry.bind("<ButtonRelease-1>", show_touch_keyboard)
 pin_button = ttk.Button(pin_row, text="Pontează", command=submit_pin)
 pin_button.pack(side="left", padx=(10, 0))
 

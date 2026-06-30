@@ -32,6 +32,8 @@ La prima pornire:
 
 Clientul acceptă cartelă NFC, telefon HCE și PIN. Pentru PIN caută automat în tabela `Angajati` prima coloană existentă dintre `PIN`, `PIN_PONTAJ`, `COD_PIN` și `PIN_ANGAJAT`.
 
+Pe stații cu monitor touch, aplicația deschide automat tastatura Windows pe ecran când utilizatorul intră în câmpul PIN sau în dialogurile de parolă/configurare.
+
 La fiecare pornire, clientul afișează iconița în system tray și se înregistrează automat în Windows Startup pentru user-ul curent prin `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. La restart de PC pornește cu fereastra vizibilă; parametrul `--minimized` rămâne disponibil doar pentru pornire manuală minimizată în tray.
 
 ## Versionare și update
