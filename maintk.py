@@ -644,7 +644,7 @@ def ensure_startup_registration():
         return
     try:
         exe_path = Path(sys.executable).resolve()
-        command = f'"{exe_path}" --minimized'
+        command = f'"{exe_path}"'
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
             r"Software\Microsoft\Windows\CurrentVersion\Run",
@@ -664,10 +664,10 @@ def ensure_startup_registration():
         startup_script = startup_dir / f"{APP_NAME}.cmd"
         startup_script.write_text(
             "@echo off\r\n"
-            f'start "" "{str(exe_path).replace("%", "%%")}" --minimized\r\n',
+            f'start "" "{str(exe_path).replace("%", "%%")}"\r\n',
             encoding="utf-8",
         )
-        debug("Pornire automată configurată în Registry și Startup folder.")
+        debug("Pornire automată configurată în Registry și Startup folder, cu fereastra vizibilă.")
     except Exception as exc:
         debug(f"Nu am putut configura pornirea automată: {exc}")
 
