@@ -593,17 +593,10 @@ def download_and_install_update(update):
             f'set "OLDPID={current_pid}"\r\n'
             'call :log "Updater pornit. Source=%SOURCE% Target=%TARGET% OldPid=%OLDPID%"\r\n'
             "timeout /t 2 /nobreak >nul\r\n"
-            "for /l %%I in (1,1,15) do (\r\n"
-            '    tasklist /fi "PID eq %OLDPID%" | find "%OLDPID%" >nul\r\n'
-            "    if errorlevel 1 goto copy_update\r\n"
-            '    call :log "Astept inchiderea aplicatiei vechi, incercarea %%I."\r\n'
-            "    timeout /t 1 /nobreak >nul\r\n"
-            ")\r\n"
-            'call :log "Aplicatia veche inca ruleaza; o inchid fortat."\r\n'
+            'call :log "Inchid procesul vechi daca inca ruleaza."\r\n'
             "taskkill /pid %OLDPID% /f >nul 2>nul\r\n"
             "timeout /t 2 /nobreak >nul\r\n"
-            ":copy_update\r\n"
-            "for /l %%I in (1,1,40) do (\r\n"
+            "for /l %%I in (1,1,60) do (\r\n"
             '    copy /y "%SOURCE%" "%TARGET%" >nul 2>>"%LOGFILE%"\r\n'
             "    if not errorlevel 1 (\r\n"
             '        call :log "Copiere reusita la incercarea %%I."\r\n'
@@ -615,7 +608,7 @@ def download_and_install_update(update):
             '    call :log "Copiere esuata la incercarea %%I."\r\n'
             "    timeout /t 1 /nobreak >nul\r\n"
             ")\r\n"
-            'call :log "Actualizarea a esuat dupa 40 de incercari; repornesc versiunea existenta."\r\n'
+            'call :log "Actualizarea a esuat dupa 60 de incercari; repornesc versiunea existenta."\r\n'
             'start "" "%TARGET%"\r\n'
             "exit /b 1\r\n"
             ":log\r\n"
@@ -624,7 +617,7 @@ def download_and_install_update(update):
             encoding="utf-8",
         )
         heartbeat("updating", f"Actualizare la v{update['version']}")
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         subprocess.Popen(
             ["cmd.exe", "/c", str(script)],
             creationflags=creationflags,
