@@ -660,14 +660,10 @@ def ensure_startup_registration():
             / "Programs"
             / "Startup"
         )
-        startup_dir.mkdir(parents=True, exist_ok=True)
         startup_script = startup_dir / f"{APP_NAME}.cmd"
-        startup_script.write_text(
-            "@echo off\r\n"
-            f'start "" "{str(exe_path).replace("%", "%%")}"\r\n',
-            encoding="utf-8",
-        )
-        debug("Pornire automată configurată în Registry și Startup folder, cu fereastra vizibilă.")
+        if startup_script.exists():
+            startup_script.unlink()
+        debug("Pornire automată configurată în Registry, cu fereastra vizibilă.")
     except Exception as exc:
         debug(f"Nu am putut configura pornirea automată: {exc}")
 

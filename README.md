@@ -32,7 +32,7 @@ La prima pornire:
 
 Clientul acceptă cartelă NFC, telefon HCE și PIN. Pentru PIN caută automat în tabela `Angajati` prima coloană existentă dintre `PIN`, `PIN_PONTAJ`, `COD_PIN` și `PIN_ANGAJAT`.
 
-La fiecare pornire, clientul afișează iconița în system tray și se înregistrează automat în Windows Startup pentru user-ul curent. Configurarea se face atât în `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, cât și printr-un fallback în folderul Startup. La restart de PC pornește cu fereastra vizibilă; parametrul `--minimized` rămâne disponibil doar pentru pornire manuală minimizată în tray.
+La fiecare pornire, clientul afișează iconița în system tray și se înregistrează automat în Windows Startup pentru user-ul curent prin `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. La restart de PC pornește cu fereastra vizibilă; parametrul `--minimized` rămâne disponibil doar pentru pornire manuală minimizată în tray.
 
 ## Versionare și update
 
