@@ -687,7 +687,7 @@ def ensure_tray_icon():
         set_tray_visible()
         return
     menu = pystray.Menu(
-        pystray.MenuItem("Deschide", show_window),
+        pystray.MenuItem("Deschide", show_window, default=True),
         pystray.MenuItem("Ascunde", hide_window),
         pystray.MenuItem("Ieșire", quit_app),
     )
@@ -697,8 +697,15 @@ def ensure_tray_icon():
 
 
 def show_window(icon=None, item=None):
-    root.after(0, root.deiconify)
-    root.after(0, root.lift)
+    def restore():
+        root.deiconify()
+        root.state("normal")
+        root.lift()
+        root.attributes("-topmost", True)
+        root.after(300, lambda: root.attributes("-topmost", False))
+        root.focus_force()
+
+    root.after(0, restore)
 
 
 def quit_app(icon=None, item=None):
