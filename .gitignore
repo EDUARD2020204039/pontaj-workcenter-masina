@@ -11,3 +11,7 @@ config.json
 drivers/*.msi
 drivers/*.exe
 downloads/*.exe
+*.pyo
+*.db
+*.sqlite
+*.sqlite3
