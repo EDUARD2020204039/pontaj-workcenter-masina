@@ -32,10 +32,10 @@ client_hash_cache = {"path": "", "mtime_ns": 0, "sha256": ""}
 client_hash_lock = threading.Lock()
 
 db_config = {
-    "server": os.getenv("DB_SERVER", "192.168.2.6"),
-    "database": os.getenv("DB_DATABASE", "Metal"),
-    "username": os.getenv("DB_USERNAME", "bogdan"),
-    "password": os.getenv("DB_PASSWORD", "HELPAN123$"),
+    "server": os.getenv("DB_SERVER", ""),
+    "database": os.getenv("DB_DATABASE", ""),
+    "username": os.getenv("DB_USERNAME", ""),
+    "password": os.getenv("DB_PASSWORD", ""),
     "driver": os.getenv("DB_DRIVER", "{ODBC Driver 18 for SQL Server}"),
 }
 

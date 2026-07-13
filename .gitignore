@@ -1,6 +1,13 @@
 __pycache__/
 *.py[cod]
 .venv/
+.env
+.env.*
+!.env.example
+.idea/
+dist/
+build/
+config.json
 drivers/*.msi
 drivers/*.exe
 downloads/*.exe

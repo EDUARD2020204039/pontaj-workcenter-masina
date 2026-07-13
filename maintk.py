@@ -14,18 +14,22 @@ from datetime import date, datetime
 from pathlib import Path
 
 APP_NAME = "WorkCenterPontaj"
-DEFAULT_SERVER_URL = "http://192.168.2.23:3490"
-LEGACY_SERVER_URLS = {"http://192.168.2.1:3490"}
-SETTINGS_PASSWORD = "XXX"
+DEFAULT_SERVER_URL = os.getenv("WORKCENTER_SERVER_URL", "http://127.0.0.1:3490")
+LEGACY_SERVER_URLS = set(
+    item.strip()
+    for item in os.getenv("WORKCENTER_LEGACY_SERVER_URLS", "").split(",")
+    if item.strip()
+)
+SETTINGS_PASSWORD = os.getenv("SETTINGS_PASSWORD", "")
 HEARTBEAT_SECONDS = 60
 REPEAT_SCAN_SECONDS = 5
 PHONE_SCAN_WAIT_SECONDS = 2
 PIN_COLUMN_CANDIDATES = ("PIN", "PIN_PONTAJ", "COD_PIN", "PIN_ANGAJAT")
 
-DB_SERVER = "192.168.2.6"
-DB_DATABASE = "Metal"
-DB_USERNAME = "bogdan"
-DB_PASSWORD = "HELPAN123$"
+DB_SERVER = os.getenv("DB_SERVER", "")
+DB_DATABASE = os.getenv("DB_DATABASE", "")
+DB_USERNAME = os.getenv("DB_USERNAME", "")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 
 
 def resource_path(relative):
